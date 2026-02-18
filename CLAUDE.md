@@ -43,7 +43,7 @@ All three interfaces (HTTP, MQTT, Serial) enqueue commands into `MotorCommandQue
 - **main.cpp** - Entry point, FreeRTOS task creation, pin definitions, initialization sequence
 - **StepperMotorController** - Motor control: FastAccelStepper + TMC2209 (UART). Implements position/heading/velocity control modes and dance/behavior animations
 - **HTTPServerController** - WiFi management, AsyncWebServer with 20+ REST endpoints, embedded HTML/AJAX web UI
-- **MQTTController** - AsyncMqttClient, topic-based command processing, status publishing (change-triggered + periodic 30s), move-complete notifications with request_id echo
+- **MQTTController** - AsyncMqttClient, single command topic with JSON dispatch, consolidated status publishing (change-triggered + periodic 30s), move-complete notifications with request_id echo
 - **ConfigurationManager** - Persistent config via ESP32 NVS/Preferences API. Stores WiFi, MQTT, motor, and TMC2209 settings
 - **MotorCommandQueue** - FreeRTOS queue wrapper for thread-safe motor commands
 - **SerialCommandQueue** - Serial command buffering and processing
