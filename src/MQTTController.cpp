@@ -72,26 +72,24 @@ void MQTTController::subscribeToCommands()
 
 void MQTTController::publishStatus(bool force)
 {
-    if (!mqttClient.connected())
+    if (!mqttClient.connected() || stepperController == nullptr)
     {
         return;
     }
-    
-    // Check if state changed or force publish
+
     if (!force && !hasStateChanged())
     {
         return;
     }
-    
-    // Update last known state
+
     updateState();
-    
-    // Build status JSON
+
     JsonDocument doc;
     doc["status"] = "success";
     doc["timestamp"] = millis();
+    doc["uptime_ms"] = millis();
     doc["free_heap"] = ESP.getFreeHeap();
-    
+
     // Motor status
     JsonObject motor = doc["motor"].to<JsonObject>();
     motor["enabled"] = stepperController->isEnabled();
@@ -103,62 +101,6 @@ void MQTTController::publishStatus(bool force)
     motor["gearRatio"] = stepperController->getGearRatio();
     motor["behaviorInProgress"] = stepperController->isBehaviorInProgress();
     motor["danceInProgress"] = stepperController->isDanceInProgress();
-    
-    // WiFi status
-    JsonObject wifi = doc["wifi"].to<JsonObject>();
-    wifi["connected"] = (WiFi.status() == WL_CONNECTED);
-    if (WiFi.status() == WL_CONNECTED)
-    {
-        wifi["ip"] = WiFi.localIP().toString();
-    }
-    
-    // Serialize and publish
-    String statusStr;
-    serializeJson(doc, statusStr);
-    
-    char topic[128];
-    snprintf(topic, sizeof(topic), "%s", statusTopicPrefix);
-    mqttClient.publish(topic, config.qosStatus, true, statusStr.c_str(), statusStr.length());
-    
-    // Also publish motor-specific status
-    JsonDocument motorDoc;
-    JsonObject motorObj = motorDoc.to<JsonObject>();
-    motorObj["enabled"] = motor["enabled"];
-    motorObj["running"] = motor["running"];
-    motorObj["position"] = motor["position"];
-    motorObj["positionDegrees"] = motor["positionDegrees"];
-    motorObj["speedHz"] = motor["speedHz"];
-    motorObj["microsteps"] = motor["microsteps"];
-    motorObj["gearRatio"] = motor["gearRatio"];
-    motorObj["behaviorInProgress"] = motor["behaviorInProgress"];
-    motorObj["danceInProgress"] = motor["danceInProgress"];
-    
-    String motorStr;
-    serializeJson(motorObj, motorStr);
-    snprintf(topic, sizeof(topic), "%s/motor", statusTopicPrefix);
-    mqttClient.publish(topic, config.qosStatus, true, motorStr.c_str(), motorStr.length());
-}
-
-void MQTTController::publishFullStatus()
-{
-    if (!mqttClient.connected() || stepperController == nullptr)
-    {
-        return;
-    }
-    
-    JsonDocument doc;
-    doc["status"] = "success";
-    doc["timestamp"] = millis();
-    doc["free_heap"] = ESP.getFreeHeap();
-    
-    // Basic motor status
-    doc["enabled"] = stepperController->isEnabled();
-    doc["isRunning"] = stepperController->isRunning();
-    doc["microsteps"] = stepperController->getMicrosteps();
-    doc["gearRatio"] = stepperController->getGearRatio();
-    doc["speedHz"] = stepperController->getTargetSpeedHz();
-    doc["stepperPosition"] = stepperController->getStepperPosition();
-    doc["behaviorInProgress"] = stepperController->isBehaviorInProgress();
 
     // TMC2209 (UART reads are slow - yield between each)
     vTaskDelay(pdMS_TO_TICKS(10));
@@ -181,20 +123,18 @@ void MQTTController::publishFullStatus()
     vTaskDelay(pdMS_TO_TICKS(25));
     tmc["blankTime"] = stepperController->getTmcBlankTime();
     vTaskDelay(pdMS_TO_TICKS(25));
-    
-    // WiFi
+
+    // WiFi status
     JsonObject wifi = doc["wifi"].to<JsonObject>();
     wifi["connected"] = (WiFi.status() == WL_CONNECTED);
     if (WiFi.status() == WL_CONNECTED)
     {
         wifi["ip"] = WiFi.localIP().toString();
     }
-    
-    String fullStr;
-    serializeJson(doc, fullStr);
-    char topic[128];
-    snprintf(topic, sizeof(topic), "%s/full", statusTopicPrefix);
-    mqttClient.publish(topic, config.qosStatus, true, fullStr.c_str(), fullStr.length());
+
+    String statusStr;
+    serializeJson(doc, statusStr);
+    mqttClient.publish(statusTopicPrefix, config.qosStatus, true, statusStr.c_str(), statusStr.length());
 }
 
 void MQTTController::publishResponse(const char* command, bool success, const char* message, const char* error)
@@ -1028,7 +968,6 @@ void MQTTController::onMqttConnect(bool sessionPresent)
     // Publish initial status and full status
     Serial.println("[MQTT] Publishing initial status...");
     instance->publishStatus(true);
-    instance->publishFullStatus();
     Serial.println("[MQTT] Initial status published");
 }
 
@@ -1164,22 +1103,22 @@ void MQTTController::mqttTaskWrapper(void* parameter)
 void MQTTController::mqttTask()
 {
     Serial.println("[MQTT] Task started");
-    
+
     MQTTCommand cmd;
     const TickType_t updateInterval = pdMS_TO_TICKS(100);
     TickType_t lastStatusCheck = xTaskGetTickCount();
-    
+
     while (true)
     {
         // Process commands from queue
         if (xQueueReceive(mqttCommandQueue, &cmd, pdMS_TO_TICKS(100)) == pdTRUE)
         {
-            Serial.printf("[MQTT] Processing queued command - Topic: %s, Payload: %.*s\n", 
-                         cmd.topic, (int)cmd.payloadLen, cmd.payload);
-            handleCommand(cmd);
+            Serial.printf("[MQTT] Processing queued command - Payload: %.*s\n",
+                         (int)cmd.payloadLen, cmd.payload);
+            handleCommand(cmd.payload, cmd.payloadLen);
         }
-        
-        // Move complete: when a heading/position move was started and motor has stopped, publish "Move complete"
+
+        // Move complete: when a heading/position move was started and motor has stopped
         if (pendingMoveComplete && stepperController != nullptr && !stepperController->isRunning())
         {
             publishMoveCompleteResponse(
@@ -1189,36 +1128,19 @@ void MQTTController::mqttTask()
             pendingMoveCommandType[0] = '\0';
             pendingMoveRequestId[0] = '\0';
         }
-        
+
         // Periodic status publishing
         TickType_t currentTick = xTaskGetTickCount();
         if ((currentTick - lastStatusCheck) >= pdMS_TO_TICKS(STATUS_PUBLISH_INTERVAL_MS))
         {
             if (mqttClient.connected())
             {
-                // Publish health check
-                JsonDocument healthDoc;
-                healthDoc["status"] = "ok";
-                healthDoc["timestamp"] = millis();
-                healthDoc["free_heap"] = ESP.getFreeHeap();
-                healthDoc["uptime_ms"] = millis();
-                
-                String healthStr;
-                serializeJson(healthDoc, healthStr);
-                
-                char healthTopic[128];
-                snprintf(healthTopic, sizeof(healthTopic), "%s/health", statusTopicPrefix);
-                mqttClient.publish(healthTopic, config.qosStatus, false, healthStr.c_str(), healthStr.length());
-                
-                // Check for state changes and publish if needed
-                publishStatus(false);
-                // Full status (TMC2209) on same interval
-                publishFullStatus();
+                publishStatus(true);
             }
-            
+
             lastStatusCheck = currentTick;
         }
-        
+
         vTaskDelay(updateInterval);
     }
 }
