@@ -14,7 +14,7 @@ pio run -t clean           # Clean build artifacts
 pio run -t clean && pio run  # Full rebuild
 ```
 
-There are no tests or linting configured.
+There are no tests or linting configured yet. When adding new features or modifying existing code, write tests. Use PlatformIO's native test framework (`pio test`) with Unity. Place tests in `test/`. Set up the test infrastructure if it doesn't exist yet.
 
 ## Architecture
 
@@ -57,6 +57,6 @@ All three interfaces (HTTP, MQTT, Serial) enqueue commands into `MotorCommandQue
 ### API Documentation
 
 - REST API: see `REST_API.md`
-- MQTT API: see `MQTT_API.md` (topics: `{baseTopic}/{deviceId}/command/{cmd}`)
+- MQTT API: see `MQTT_API.md` (single command topic: `{baseTopic}/{deviceId}/command`)
 - Pin connections: see `pin-connections.md`
 - Product spec: see `PRODUCT_SPEC.md`
