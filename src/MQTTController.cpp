@@ -1091,62 +1091,51 @@ void MQTTController::onMqttMessage(char* topic, char* payload, AsyncMqttClientMe
     {
         return;
     }
-    
-    // Log message receipt (first chunk only to avoid spam)
+
     if (index == 0)
     {
-        Serial.printf("[MQTT] Message received - Topic: %s, QoS: %u, Retain: %s, Total size: %zu bytes\n", 
+        Serial.printf("[MQTT] Message received - Topic: %s, QoS: %u, Retain: %s, Total size: %zu bytes\n",
                      topic, properties.qos, properties.retain ? "Yes" : "No", total);
     }
-    
+
     // Handle multi-part messages
     static char fullPayload[512];
     static size_t fullPayloadLen = 0;
-    
+
     if (index == 0)
     {
-        // Start of new message
         fullPayloadLen = 0;
     }
-    
-    // Copy chunk
+
     size_t copyLen = len;
     if (fullPayloadLen + copyLen >= sizeof(fullPayload))
     {
         copyLen = sizeof(fullPayload) - fullPayloadLen - 1;
     }
-    
+
     memcpy(fullPayload + fullPayloadLen, payload, copyLen);
     fullPayloadLen += copyLen;
-    
-    // If this is the last chunk, process the command
+
     if (index + len >= total)
     {
         fullPayload[fullPayloadLen] = '\0';
-        
-        // Queue command for processing
+
         MQTTCommand cmd;
-        strncpy(cmd.topic, topic, sizeof(cmd.topic) - 1);
-        cmd.topic[sizeof(cmd.topic) - 1] = '\0';
         strncpy(cmd.payload, fullPayload, sizeof(cmd.payload) - 1);
         cmd.payload[sizeof(cmd.payload) - 1] = '\0';
         cmd.payloadLen = fullPayloadLen;
-        
-        // Determine command type from topic (will be set in handleCommand)
-        cmd.type = MQTTCommand::CMD_POSITION; // Placeholder
-        
-        Serial.printf("[MQTT] Queuing command - Topic: %s, Payload: %.*s\n", topic, (int)fullPayloadLen, fullPayload);
-        
+
+        Serial.printf("[MQTT] Queuing command - Payload: %.*s\n", (int)fullPayloadLen, fullPayload);
+
         if (xQueueSend(instance->mqttCommandQueue, &cmd, 0) != pdTRUE)
         {
             Serial.println("[MQTT] ERROR: Command queue full, dropping message");
-            Serial.printf("[MQTT] Queue capacity: %zu, consider increasing MQTT_QUEUE_SIZE\n", MQTT_QUEUE_SIZE);
         }
         else
         {
             Serial.println("[MQTT] Command queued successfully");
         }
-        
+
         fullPayloadLen = 0;
     }
 }
