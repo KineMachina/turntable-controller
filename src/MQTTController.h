@@ -42,30 +42,34 @@ struct MQTTCommand {
  * Follows the same pattern as SFX controller for consistency
  */
 class MQTTController {
+#ifdef UNIT_TEST
+public:
+#else
 private:
+#endif
     // MQTT client
     AsyncMqttClient mqttClient;
     MQTTConfig config;
-    
+
     // Controller references
     StepperMotorController* stepperController;
     MotorCommandQueue* commandQueue;
     ConfigurationManager* configManager;
-    
+
     // Topic buffers
     char commandTopic[128];
     char statusTopicPrefix[128];
     char responseTopic[128];
     char onlineTopic[128];
-    
+
     // FreeRTOS task and queue
     TaskHandle_t mqttTaskHandle;
     QueueHandle_t mqttCommandQueue;
     static const size_t MQTT_QUEUE_SIZE = 20;
-    
+
     // Static instance pointer for callbacks
     static MQTTController* instance;
-    
+
     // State tracking for change detection
     struct {
         bool enabled;
@@ -78,16 +82,15 @@ private:
         bool behaviorInProgress;
         bool danceInProgress;
     } lastState;
-    
+
     // Status publishing
     unsigned long lastStatusPublishTime;
     static const unsigned long STATUS_PUBLISH_INTERVAL_MS = 30000; // 30 seconds
-    
+
     // Move-complete tracking: set when heading/position move starts, cleared when move finishes or stopMove/forceStop
     bool pendingMoveComplete;
     char pendingMoveCommandType[24];  // "heading" or "position"
     char pendingMoveRequestId[64];    // optional request_id from incoming JSON
-    
     // Internal methods
     void buildTopics();
     void subscribeToCommands();
