@@ -47,19 +47,16 @@ MQTTController::~MQTTController()
 
 void MQTTController::buildTopics()
 {
-    // Build topic prefixes: {baseTopic}/{deviceId}/
-    snprintf(commandTopicPrefix, sizeof(commandTopicPrefix), "%s/%s/command", config.baseTopic, config.deviceId);
+    snprintf(commandTopic, sizeof(commandTopic), "%s/%s/command", config.baseTopic, config.deviceId);
     snprintf(statusTopicPrefix, sizeof(statusTopicPrefix), "%s/%s/status", config.baseTopic, config.deviceId);
     snprintf(responseTopic, sizeof(responseTopic), "%s/%s/response", config.baseTopic, config.deviceId);
     snprintf(onlineTopic, sizeof(onlineTopic), "%s/%s/status/online", config.baseTopic, config.deviceId);
-    
+
     Serial.println("[MQTT] Topics configured:");
-    Serial.printf("  Base Topic: %s\n", config.baseTopic);
-    Serial.printf("  Device ID: %s\n", config.deviceId);
-    Serial.printf("  Command Prefix: %s\n", commandTopicPrefix);
-    Serial.printf("  Status Prefix: %s\n", statusTopicPrefix);
-    Serial.printf("  Response Topic: %s\n", responseTopic);
-    Serial.printf("  Online Topic: %s\n", onlineTopic);
+    Serial.printf("  Command: %s\n", commandTopic);
+    Serial.printf("  Status: %s\n", statusTopicPrefix);
+    Serial.printf("  Response: %s\n", responseTopic);
+    Serial.printf("  Online: %s\n", onlineTopic);
 }
 
 void MQTTController::subscribeToCommands()
@@ -68,25 +65,9 @@ void MQTTController::subscribeToCommands()
     {
         return;
     }
-    
-    char topic[256];
-    
-    // Subscribe to all command topics
-    const char* commands[] = {
-        "position", "heading", "enable", "speed", "acceleration",
-        "microsteps", "gearratio", "speedHz", "runForward", "runBackward",
-        "stopMove", "forceStop", "reset", "zero", "home",
-        "dance", "stopDance", "behavior", "stopBehavior"
-    };
-    
-    Serial.printf("[MQTT] Subscribing to %zu command topics (QoS %u)...\n", sizeof(commands) / sizeof(commands[0]), config.qosCommands);
-    for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++)
-    {
-        snprintf(topic, sizeof(topic), "%s/%s", commandTopicPrefix, commands[i]);
-        uint16_t packetId = mqttClient.subscribe(topic, config.qosCommands);
-        Serial.printf("[MQTT] Subscribed to: %s (packet ID: %u)\n", topic, packetId);
-    }
-    Serial.println("[MQTT] All command subscriptions sent");
+
+    uint16_t packetId = mqttClient.subscribe(commandTopic, config.qosCommands);
+    Serial.printf("[MQTT] Subscribed to: %s (QoS %u, packet ID: %u)\n", commandTopic, config.qosCommands, packetId);
 }
 
 void MQTTController::publishStatus(bool force)
