@@ -33,29 +33,6 @@ struct MQTTConfig {
  * Used for queuing commands from MQTT callbacks
  */
 struct MQTTCommand {
-    enum Type {
-        CMD_POSITION,
-        CMD_HEADING,
-        CMD_ENABLE,
-        CMD_SPEED,
-        CMD_ACCELERATION,
-        CMD_MICROSTEPS,
-        CMD_GEAR_RATIO,
-        CMD_SPEED_HZ,
-        CMD_RUN_FORWARD,
-        CMD_RUN_BACKWARD,
-        CMD_STOP_MOVE,
-        CMD_FORCE_STOP,
-        CMD_RESET,
-        CMD_ZERO,
-        CMD_HOME,
-        CMD_DANCE,
-        CMD_STOP_DANCE,
-        CMD_BEHAVIOR,
-        CMD_STOP_BEHAVIOR
-    };
-    Type type;
-    char topic[256];
     char payload[512];
     size_t payloadLen;
 };
@@ -76,7 +53,7 @@ private:
     ConfigurationManager* configManager;
     
     // Topic buffers
-    char commandTopicPrefix[128];
+    char commandTopic[128];
     char statusTopicPrefix[128];
     char responseTopic[128];
     char onlineTopic[128];
@@ -115,14 +92,13 @@ private:
     void buildTopics();
     void subscribeToCommands();
     void publishStatus(bool force = false);
-    void publishFullStatus();
     void publishResponse(const char* command, bool success, const char* message, const char* error = nullptr);
     void publishMoveCompleteResponse(const char* commandType, const char* requestId = nullptr);
     bool hasStateChanged();
     void updateState();
     
     // Command handlers
-    void handleCommand(MQTTCommand& cmd);
+    void handleCommand(const char* payload, size_t len);
     void handlePosition(const char* payload, size_t len);
     void handleHeading(const char* payload, size_t len);
     void handleEnable(const char* payload, size_t len);
