@@ -290,121 +290,110 @@ void MQTTController::updateState()
     lastState.danceInProgress = stepperController->isDanceInProgress();
 }
 
-void MQTTController::handleCommand(MQTTCommand& cmd)
+void MQTTController::handleCommand(const char* payload, size_t len)
 {
-    // Extract command type from topic
-    String topicStr(cmd.topic);
-    String commandType;
-    
-    // Find the command type after "command/"
-    int cmdIdx = topicStr.lastIndexOf('/');
-    if (cmdIdx >= 0)
+    // Parse JSON to extract command type
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, payload, len);
+
+    if (error)
     {
-        commandType = topicStr.substring(cmdIdx + 1);
-        Serial.printf("[MQTT] Handling command: %s\n", commandType.c_str());
-    }
-    else
-    {
-        Serial.println("[MQTT] ERROR: Invalid topic format - could not extract command type");
-        Serial.printf("[MQTT] Topic was: %s\n", cmd.topic);
-        publishResponse("unknown", false, "Invalid topic format", "Could not extract command type");
+        Serial.printf("[MQTT] ERROR: Invalid JSON: %s\n", error.c_str());
+        publishResponse("unknown", false, "Invalid JSON", error.c_str());
         return;
     }
-    
-    // Null-terminate payload
-    if (cmd.payloadLen < sizeof(cmd.payload))
+
+    if (!doc["command"].is<const char*>() && !doc["command"].is<String>())
     {
-        cmd.payload[cmd.payloadLen] = '\0';
+        Serial.println("[MQTT] ERROR: Missing 'command' field");
+        publishResponse("unknown", false, "Missing 'command' field", "Expected string");
+        return;
     }
-    else
-    {
-        cmd.payload[sizeof(cmd.payload) - 1] = '\0';
-    }
-    
-    // Route to appropriate handler
+
+    String commandType = doc["command"].as<String>();
     commandType.toLowerCase();
-    
+    Serial.printf("[MQTT] Handling command: %s\n", commandType.c_str());
+
     if (commandType == "position")
     {
-        handlePosition(cmd.payload, cmd.payloadLen);
+        handlePosition(payload, len);
     }
     else if (commandType == "heading")
     {
-        handleHeading(cmd.payload, cmd.payloadLen);
+        handleHeading(payload, len);
     }
     else if (commandType == "enable")
     {
-        handleEnable(cmd.payload, cmd.payloadLen);
+        handleEnable(payload, len);
     }
     else if (commandType == "speed")
     {
-        handleSpeed(cmd.payload, cmd.payloadLen);
+        handleSpeed(payload, len);
     }
     else if (commandType == "acceleration")
     {
-        handleAcceleration(cmd.payload, cmd.payloadLen);
+        handleAcceleration(payload, len);
     }
     else if (commandType == "microsteps")
     {
-        handleMicrosteps(cmd.payload, cmd.payloadLen);
+        handleMicrosteps(payload, len);
     }
     else if (commandType == "gearratio")
     {
-        handleGearRatio(cmd.payload, cmd.payloadLen);
+        handleGearRatio(payload, len);
     }
     else if (commandType == "speedhz")
     {
-        handleSpeedHz(cmd.payload, cmd.payloadLen);
+        handleSpeedHz(payload, len);
     }
     else if (commandType == "runforward")
     {
-        handleRunForward(cmd.payload, cmd.payloadLen);
+        handleRunForward(payload, len);
     }
     else if (commandType == "runbackward")
     {
-        handleRunBackward(cmd.payload, cmd.payloadLen);
+        handleRunBackward(payload, len);
     }
-    else if (commandType == "stopmove")
+    else if (commandType == "stop" || commandType == "stopmove")
     {
-        handleStopMove(cmd.payload, cmd.payloadLen);
+        handleStopMove(payload, len);
     }
     else if (commandType == "forcestop")
     {
-        handleForceStop(cmd.payload, cmd.payloadLen);
+        handleForceStop(payload, len);
     }
     else if (commandType == "reset")
     {
-        handleReset(cmd.payload, cmd.payloadLen);
+        handleReset(payload, len);
     }
     else if (commandType == "zero")
     {
-        handleZero(cmd.payload, cmd.payloadLen);
+        handleZero(payload, len);
     }
     else if (commandType == "home")
     {
-        handleHome(cmd.payload, cmd.payloadLen);
+        handleHome(payload, len);
     }
     else if (commandType == "dance")
     {
-        handleDance(cmd.payload, cmd.payloadLen);
+        handleDance(payload, len);
     }
     else if (commandType == "stopdance")
     {
-        handleStopDance(cmd.payload, cmd.payloadLen);
+        handleStopDance(payload, len);
     }
     else if (commandType == "behavior")
     {
-        handleBehavior(cmd.payload, cmd.payloadLen);
+        handleBehavior(payload, len);
     }
     else if (commandType == "stopbehavior")
     {
-        handleStopBehavior(cmd.payload, cmd.payloadLen);
+        handleStopBehavior(payload, len);
     }
     else
     {
-        Serial.printf("[MQTT] ERROR: Unknown command type: %s\n", commandType.c_str());
-        Serial.printf("[MQTT] Topic: %s, Payload: %.*s\n", cmd.topic, (int)cmd.payloadLen, cmd.payload);
-        publishResponse(commandType.c_str(), false, "Unknown command", "Command type not recognized");
+        Serial.printf("[MQTT] ERROR: Unknown command: %s\n", commandType.c_str());
+        publishResponse(commandType.c_str(), false, "Unknown command", "Command not recognized");
     }
 }
 
