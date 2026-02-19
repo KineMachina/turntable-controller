@@ -14,7 +14,12 @@ pio run -t clean           # Clean build artifacts
 pio run -t clean && pio run  # Full rebuild
 ```
 
-There are no tests or linting configured yet. When adding new features or modifying existing code, write tests. Use PlatformIO's native test framework (`pio test`) with Unity. Place tests in `test/`. Set up the test infrastructure if it doesn't exist yet.
+```bash
+pio test -e native              # Run all native (host) tests
+pio test -e native -f native/test_mqtt_command_dispatch   # Run one suite
+```
+
+Tests use PlatformIO's native platform with Unity. Mock headers in `test/native/mocks/` shadow ESP32 dependencies so tests run on the host without hardware. When adding new features or modifying existing code, write tests. Place test suites in `test/native/test_<name>/test_main.cpp`. Each test file must include mock headers before `MQTTController.h` to set include guards (see existing tests for the pattern).
 
 ## Architecture
 
