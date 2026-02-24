@@ -21,8 +21,9 @@ struct MQTTConfig {
     uint16_t port = 1883;
     const char* username = "";
     const char* password = "";
-    const char* deviceId = "turntable_001";
-    const char* baseTopic = "kinemachina/turntable";
+    const char* deviceId = "turntable-001";
+    const char* baseTopic = "kinemachina/turntable";  // deprecated: ignored by KRP v1.0, kept for compat with main.cpp/HTTPServerController
+    const char* deviceName = "Turntable A";
     uint8_t qosCommands = 1;
     uint8_t qosStatus = 0;
     uint16_t keepalive = 60;
@@ -56,11 +57,13 @@ private:
     MotorCommandQueue* commandQueue;
     ConfigurationManager* configManager;
 
-    // Topic buffers
+    // Topic buffers (KRP v1.0)
     char commandTopic[128];
-    char statusTopicPrefix[128];
+    char statusTopic[128];
     char responseTopic[128];
-    char onlineTopic[128];
+    char stateTopic[128];
+    char nameTopic[128];
+    char capabilitiesTopic[128];
 
     // FreeRTOS task and queue
     TaskHandle_t mqttTaskHandle;
@@ -94,14 +97,17 @@ private:
     // Internal methods
     void buildTopics();
     void subscribeToCommands();
+    void publishBirthMessages();
     void publishStatus(bool force = false);
-    void publishResponse(const char* command, bool success, const char* message, const char* error = nullptr);
+    void publishResponse(const char* command, bool success, const char* message = nullptr, const char* requestId = nullptr);
     void publishMoveCompleteResponse(const char* commandType, const char* requestId = nullptr);
     bool hasStateChanged();
     void updateState();
     
     // Command handlers
     void handleCommand(const char* payload, size_t len);
+    void handleMove(const char* payload, size_t len);
+    void handleBehaviorUnified(const char* payload, size_t len);
     void handlePosition(const char* payload, size_t len);
     void handleHeading(const char* payload, size_t len);
     void handleEnable(const char* payload, size_t len);
@@ -117,10 +123,6 @@ private:
     void handleReset(const char* payload, size_t len);
     void handleZero(const char* payload, size_t len);
     void handleHome(const char* payload, size_t len);
-    void handleDance(const char* payload, size_t len);
-    void handleStopDance(const char* payload, size_t len);
-    void handleBehavior(const char* payload, size_t len);
-    void handleStopBehavior(const char* payload, size_t len);
     
     // MQTT callbacks (static wrappers)
     static void onMqttConnect(bool sessionPresent);

@@ -15,7 +15,7 @@ MQTTController::MQTTController()
     memset(&lastState, 0, sizeof(lastState));
     pendingMoveCommandType[0] = '\0';
     pendingMoveRequestId[0] = '\0';
-    
+
     // Set instance pointer
     instance = this;
 }
@@ -26,37 +26,43 @@ MQTTController::~MQTTController()
     {
         mqttClient.disconnect();
     }
-    
+
     if (mqttTaskHandle != nullptr)
     {
         vTaskDelete(mqttTaskHandle);
         mqttTaskHandle = nullptr;
     }
-    
+
     if (mqttCommandQueue != nullptr)
     {
         vQueueDelete(mqttCommandQueue);
         mqttCommandQueue = nullptr;
     }
-    
+
     if (instance == this)
     {
         instance = nullptr;
     }
 }
 
+// ─── Task 1: KRP v1.0 topic builder ─────────────────────────────────────────
+
 void MQTTController::buildTopics()
 {
-    snprintf(commandTopic, sizeof(commandTopic), "%s/%s/command", config.baseTopic, config.deviceId);
-    snprintf(statusTopicPrefix, sizeof(statusTopicPrefix), "%s/%s/status", config.baseTopic, config.deviceId);
-    snprintf(responseTopic, sizeof(responseTopic), "%s/%s/response", config.baseTopic, config.deviceId);
-    snprintf(onlineTopic, sizeof(onlineTopic), "%s/%s/status/online", config.baseTopic, config.deviceId);
+    snprintf(commandTopic, sizeof(commandTopic), "krp/%s/command", config.deviceId);
+    snprintf(statusTopic, sizeof(statusTopic), "krp/%s/status", config.deviceId);
+    snprintf(responseTopic, sizeof(responseTopic), "krp/%s/response", config.deviceId);
+    snprintf(stateTopic, sizeof(stateTopic), "krp/%s/$state", config.deviceId);
+    snprintf(nameTopic, sizeof(nameTopic), "krp/%s/$name", config.deviceId);
+    snprintf(capabilitiesTopic, sizeof(capabilitiesTopic), "krp/%s/$capabilities", config.deviceId);
 
-    Serial.println("[MQTT] Topics configured:");
-    Serial.printf("  Command: %s\n", commandTopic);
-    Serial.printf("  Status: %s\n", statusTopicPrefix);
-    Serial.printf("  Response: %s\n", responseTopic);
-    Serial.printf("  Online: %s\n", onlineTopic);
+    Serial.println("[MQTT] Topics configured (KRP v1.0):");
+    Serial.printf("  Command:      %s\n", commandTopic);
+    Serial.printf("  Status:       %s\n", statusTopic);
+    Serial.printf("  Response:     %s\n", responseTopic);
+    Serial.printf("  $state:       %s\n", stateTopic);
+    Serial.printf("  $name:        %s\n", nameTopic);
+    Serial.printf("  $capabilities:%s\n", capabilitiesTopic);
 }
 
 void MQTTController::subscribeToCommands()
@@ -69,6 +75,70 @@ void MQTTController::subscribeToCommands()
     uint16_t packetId = mqttClient.subscribe(commandTopic, config.qosCommands);
     Serial.printf("[MQTT] Subscribed to: %s (QoS %u, packet ID: %u)\n", commandTopic, config.qosCommands, packetId);
 }
+
+// ─── Task 2: Birth sequence ─────────────────────────────────────────────────
+
+void MQTTController::publishBirthMessages()
+{
+    if (!mqttClient.connected())
+    {
+        return;
+    }
+
+    // 1. $state → "online" (retained, QoS 1)
+    mqttClient.publish(stateTopic, 1, true, "online", 6);
+    Serial.printf("[MQTT] Published $state=online to %s (retained)\n", stateTopic);
+
+    // 2. $name → config.deviceName (retained, QoS 1)
+    mqttClient.publish(nameTopic, 1, true, config.deviceName, strlen(config.deviceName));
+    Serial.printf("[MQTT] Published $name=%s to %s (retained)\n", config.deviceName, nameTopic);
+
+    // 3. $capabilities → JSON (retained, QoS 1)
+    JsonDocument doc;
+    doc["device_id"] = config.deviceId;
+    doc["device_type"] = "turntable";
+    doc["name"] = config.deviceName;
+    doc["platform"] = "esp32s3";
+    doc["protocol_version"] = "1.0";
+
+    // capabilities.motion.joints
+    JsonObject capabilities = doc["capabilities"].to<JsonObject>();
+    JsonObject motion = capabilities["motion"].to<JsonObject>();
+    JsonArray joints = motion["joints"].to<JsonArray>();
+    JsonObject turntableJoint = joints.add<JsonObject>();
+    turntableJoint["name"] = "turntable";
+    turntableJoint["type"] = "stepper";
+    turntableJoint["continuous"] = true;
+    turntableJoint["home"] = 0;
+
+    // capabilities.behaviors
+    JsonArray behaviors = capabilities["behaviors"].to<JsonArray>();
+    // Behavior types
+    behaviors.add("scanning");
+    behaviors.add("sleeping");
+    behaviors.add("eating");
+    behaviors.add("alert");
+    behaviors.add("roaring");
+    behaviors.add("stalking");
+    behaviors.add("playing");
+    behaviors.add("resting");
+    behaviors.add("hunting");
+    behaviors.add("victory");
+    // Dance types
+    behaviors.add("twist");
+    behaviors.add("shake");
+    behaviors.add("spin");
+    behaviors.add("wiggle");
+    behaviors.add("watusi");
+    behaviors.add("peppermint_twist");
+
+    String capStr;
+    serializeJson(doc, capStr);
+    mqttClient.publish(capabilitiesTopic, 1, true, capStr.c_str(), capStr.length());
+    Serial.printf("[MQTT] Published $capabilities to %s (retained, %u bytes)\n", capabilitiesTopic, capStr.length());
+}
+
+// ─── Task 4: Lean KRP status publisher ───────────────────────────────────────
 
 void MQTTController::publishStatus(bool force)
 {
@@ -85,80 +155,46 @@ void MQTTController::publishStatus(bool force)
     updateState();
 
     JsonDocument doc;
-    doc["status"] = "success";
-    doc["timestamp"] = millis();
+
+    // Lean KRP format: joints object with turntable degrees
+    JsonObject joints = doc["joints"].to<JsonObject>();
+    joints["turntable"] = stepperController->getStepperPositionDegrees();
+
     doc["uptime_ms"] = millis();
-    doc["free_heap"] = ESP.getFreeHeap();
-
-    // Motor status
-    JsonObject motor = doc["motor"].to<JsonObject>();
-    motor["enabled"] = stepperController->isEnabled();
-    motor["running"] = stepperController->isRunning();
-    motor["position"] = stepperController->getStepperPosition();
-    motor["positionDegrees"] = stepperController->getStepperPositionDegrees();
-    motor["speedHz"] = stepperController->getTargetSpeedHz();
-    motor["microsteps"] = stepperController->getMicrosteps();
-    motor["gearRatio"] = stepperController->getGearRatio();
-    motor["behaviorInProgress"] = stepperController->isBehaviorInProgress();
-    motor["danceInProgress"] = stepperController->isDanceInProgress();
-
-    // TMC2209 (UART reads are slow - yield between each)
-    vTaskDelay(pdMS_TO_TICKS(10));
-    JsonObject tmc = doc["tmc2209"].to<JsonObject>();
-    tmc["rmsCurrent"] = stepperController->getTmcRmsCurrent();
-    vTaskDelay(pdMS_TO_TICKS(25));
-    tmc["csActual"] = stepperController->getTmcCsActual();
-    vTaskDelay(pdMS_TO_TICKS(25));
-    tmc["actualCurrent"] = stepperController->getTmcActualCurrent();
-    vTaskDelay(pdMS_TO_TICKS(25));
-    tmc["irun"] = stepperController->getTmcIrun();
-    vTaskDelay(pdMS_TO_TICKS(25));
-    tmc["ihold"] = stepperController->getTmcIhold();
-    vTaskDelay(pdMS_TO_TICKS(25));
-    tmc["enabled"] = stepperController->getTmcEnabled();
-    vTaskDelay(pdMS_TO_TICKS(25));
-    tmc["spreadCycle"] = stepperController->getTmcSpreadCycle();
-    vTaskDelay(pdMS_TO_TICKS(25));
-    tmc["pwmAutoscale"] = stepperController->getTmcPwmAutoscale();
-    vTaskDelay(pdMS_TO_TICKS(25));
-    tmc["blankTime"] = stepperController->getTmcBlankTime();
-    vTaskDelay(pdMS_TO_TICKS(25));
-
-    // WiFi status
-    JsonObject wifi = doc["wifi"].to<JsonObject>();
-    wifi["connected"] = (WiFi.status() == WL_CONNECTED);
-    if (WiFi.status() == WL_CONNECTED)
-    {
-        wifi["ip"] = WiFi.localIP().toString();
-    }
+    doc["timestamp"] = millis();
 
     String statusStr;
     serializeJson(doc, statusStr);
-    mqttClient.publish(statusTopicPrefix, config.qosStatus, true, statusStr.c_str(), statusStr.length());
+    mqttClient.publish(statusTopic, config.qosStatus, true, statusStr.c_str(), statusStr.length());
 }
 
-void MQTTController::publishResponse(const char* command, bool success, const char* message, const char* error)
+// ─── Task 4: KRP response publisher ─────────────────────────────────────────
+
+void MQTTController::publishResponse(const char* command, bool success, const char* message, const char* requestId)
 {
     if (!mqttClient.connected())
     {
         return;
     }
-    
+
     JsonDocument doc;
-    doc["status"] = success ? "success" : "error";
+    doc["status"] = success ? "ok" : "error";
     doc["command"] = command;
-    doc["executed"] = success;
-    doc["message"] = message;
     doc["timestamp"] = millis();
-    
-    if (error != nullptr)
+
+    if (requestId != nullptr && requestId[0] != '\0')
     {
-        doc["error"] = error;
+        doc["request_id"] = requestId;
     }
-    
+
+    if (!success && message != nullptr)
+    {
+        doc["message"] = message;
+    }
+
     String responseStr;
     serializeJson(doc, responseStr);
-    
+
     mqttClient.publish(responseTopic, config.qosCommands, false, responseStr.c_str(), responseStr.length());
 }
 
@@ -169,10 +205,8 @@ void MQTTController::publishMoveCompleteResponse(const char* commandType, const 
         return;
     }
     JsonDocument doc;
-    doc["status"] = "success";
+    doc["status"] = "ok";
     doc["command"] = commandType;
-    doc["executed"] = true;
-    doc["message"] = "Move complete";
     doc["event"] = "complete";
     doc["timestamp"] = millis();
     if (requestId != nullptr && requestId[0] != '\0')
@@ -190,7 +224,7 @@ bool MQTTController::hasStateChanged()
     {
         return false;
     }
-    
+
     bool enabled = stepperController->isEnabled();
     bool running = stepperController->isRunning();
     long position = stepperController->getStepperPosition();
@@ -218,7 +252,7 @@ void MQTTController::updateState()
     {
         return;
     }
-    
+
     lastState.enabled = stepperController->isEnabled();
     lastState.running = stepperController->isRunning();
     lastState.position = stepperController->getStepperPosition();
@@ -230,6 +264,8 @@ void MQTTController::updateState()
     lastState.danceInProgress = stepperController->isDanceInProgress();
 }
 
+// ─── Task 3: KRP command dispatch ────────────────────────────────────────────
+
 void MQTTController::handleCommand(const char* payload, size_t len)
 {
     // Parse JSON to extract command type
@@ -239,14 +275,14 @@ void MQTTController::handleCommand(const char* payload, size_t len)
     if (error)
     {
         Serial.printf("[MQTT] ERROR: Invalid JSON: %s\n", error.c_str());
-        publishResponse("unknown", false, "Invalid JSON", error.c_str());
+        publishResponse("unknown", false, "Invalid JSON");
         return;
     }
 
     if (!doc["command"].is<const char*>() && !doc["command"].is<String>())
     {
         Serial.println("[MQTT] ERROR: Missing 'command' field");
-        publishResponse("unknown", false, "Missing 'command' field", "Expected string");
+        publishResponse("unknown", false, "Missing 'command' field");
         return;
     }
 
@@ -254,14 +290,20 @@ void MQTTController::handleCommand(const char* payload, size_t len)
     commandType.toLowerCase();
     Serial.printf("[MQTT] Handling command: %s\n", commandType.c_str());
 
-    if (commandType == "position")
+    // KRP v1.0 commands
+    if (commandType == "move")
     {
-        handlePosition(payload, len);
+        handleMove(payload, len);
     }
-    else if (commandType == "heading")
+    else if (commandType == "home")
     {
-        handleHeading(payload, len);
+        handleHome(payload, len);
     }
+    else if (commandType == "behavior")
+    {
+        handleBehaviorUnified(payload, len);
+    }
+    // Device-specific commands
     else if (commandType == "enable")
     {
         handleEnable(payload, len);
@@ -310,52 +352,277 @@ void MQTTController::handleCommand(const char* payload, size_t len)
     {
         handleZero(payload, len);
     }
-    else if (commandType == "home")
+    // Legacy aliases
+    else if (commandType == "heading")
     {
-        handleHome(payload, len);
+        handleHeading(payload, len);
     }
-    else if (commandType == "dance")
+    else if (commandType == "position")
     {
-        handleDance(payload, len);
-    }
-    else if (commandType == "stopdance")
-    {
-        handleStopDance(payload, len);
-    }
-    else if (commandType == "behavior")
-    {
-        handleBehavior(payload, len);
-    }
-    else if (commandType == "stopbehavior")
-    {
-        handleStopBehavior(payload, len);
+        handlePosition(payload, len);
     }
     else
     {
         Serial.printf("[MQTT] ERROR: Unknown command: %s\n", commandType.c_str());
-        publishResponse(commandType.c_str(), false, "Unknown command", "Command not recognized");
+        publishResponse(commandType.c_str(), false, "Unknown command");
     }
 }
+
+// ─── Task 3: handleMove (KRP unified move) ──────────────────────────────────
+
+void MQTTController::handleMove(const char* payload, size_t len)
+{
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, payload, len);
+
+    if (error)
+    {
+        publishResponse("move", false, "Invalid JSON");
+        return;
+    }
+
+    // KRP spec: require "joint" field
+    if (!doc["joint"].is<const char*>() && !doc["joint"].is<String>())
+    {
+        publishResponse("move", false, "Missing 'joint' field");
+        return;
+    }
+
+    String joint = doc["joint"].as<String>();
+    joint.toLowerCase();
+
+    // KRP spec: silently ignore unknown joints
+    if (joint != "turntable")
+    {
+        return;
+    }
+
+    // Dispatch based on which motion field is present
+    if (doc["heading"].is<float>() || doc["heading"].is<int>())
+    {
+        handleHeading(payload, len);
+    }
+    else if (doc["position"].is<float>() || doc["position"].is<int>() ||
+             doc["angle"].is<float>() || doc["angle"].is<int>())
+    {
+        // If "angle" is present but "position" is not, copy angle to position for handlePosition
+        if (!doc["position"].is<float>() && !doc["position"].is<int>())
+        {
+            // Re-serialize with position field from angle
+            JsonDocument moveDoc;
+            deserializeJson(moveDoc, payload, len);
+            moveDoc["position"] = moveDoc["angle"].as<float>();
+            String moveStr;
+            serializeJson(moveDoc, moveStr);
+            handlePosition(moveStr.c_str(), moveStr.length());
+        }
+        else
+        {
+            handlePosition(payload, len);
+        }
+    }
+    else
+    {
+        publishResponse("move", false, "Missing 'heading', 'position', or 'angle' field");
+    }
+}
+
+// ─── Task 3: handleBehaviorUnified (KRP unified behavior) ───────────────────
+
+void MQTTController::handleBehaviorUnified(const char* payload, size_t len)
+{
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, payload, len);
+
+    if (error)
+    {
+        publishResponse("behavior", false, "Invalid JSON");
+        return;
+    }
+
+    // Extract request_id if present
+    const char* requestId = nullptr;
+    char ridBuf[64] = {0};
+    if (doc["request_id"].is<const char*>() || doc["request_id"].is<String>())
+    {
+        String rid = doc["request_id"].as<String>();
+        strncpy(ridBuf, rid.c_str(), sizeof(ridBuf) - 1);
+        requestId = ridBuf;
+    }
+
+    // If stop: true, stop both behaviors and dances
+    if (doc["stop"].is<bool>() && doc["stop"].as<bool>())
+    {
+        stepperController->stopBehavior();
+        stepperController->stopDance();
+        publishResponse("behavior", true, nullptr, requestId);
+        publishStatus(true);
+        return;
+    }
+
+    // Require "name" field
+    if (!doc["name"].is<const char*>() && !doc["name"].is<String>())
+    {
+        publishResponse("behavior", false, "Missing 'name' field", requestId);
+        return;
+    }
+
+    String name = doc["name"].as<String>();
+    name.toLowerCase();
+
+    // Try as dance type first
+    bool isDance = false;
+    StepperMotorController::DanceType danceType;
+    if (name == "twist")
+    {
+        danceType = StepperMotorController::DanceType::TWIST;
+        isDance = true;
+    }
+    else if (name == "shake")
+    {
+        danceType = StepperMotorController::DanceType::SHAKE;
+        isDance = true;
+    }
+    else if (name == "spin")
+    {
+        danceType = StepperMotorController::DanceType::SPIN;
+        isDance = true;
+    }
+    else if (name == "wiggle")
+    {
+        danceType = StepperMotorController::DanceType::WIGGLE;
+        isDance = true;
+    }
+    else if (name == "watusi")
+    {
+        danceType = StepperMotorController::DanceType::WATUSI;
+        isDance = true;
+    }
+    else if (name == "peppermint_twist" || name == "pepperminttwist")
+    {
+        danceType = StepperMotorController::DanceType::PEPPERMINT_TWIST;
+        isDance = true;
+    }
+
+    if (isDance)
+    {
+        bool success = stepperController->startDance(danceType);
+        if (success)
+        {
+            publishResponse("behavior", true, nullptr, requestId);
+            publishStatus(true);
+        }
+        else
+        {
+            publishResponse("behavior", false, "Dance failed to start", requestId);
+        }
+        return;
+    }
+
+    // Try as behavior type
+    bool isBehavior = false;
+    StepperMotorController::BehaviorType behaviorType;
+    if (name == "scanning")
+    {
+        behaviorType = StepperMotorController::BehaviorType::SCANNING;
+        isBehavior = true;
+    }
+    else if (name == "sleeping")
+    {
+        behaviorType = StepperMotorController::BehaviorType::SLEEPING;
+        isBehavior = true;
+    }
+    else if (name == "eating")
+    {
+        behaviorType = StepperMotorController::BehaviorType::EATING;
+        isBehavior = true;
+    }
+    else if (name == "alert")
+    {
+        behaviorType = StepperMotorController::BehaviorType::ALERT;
+        isBehavior = true;
+    }
+    else if (name == "roaring")
+    {
+        behaviorType = StepperMotorController::BehaviorType::ROARING;
+        isBehavior = true;
+    }
+    else if (name == "stalking")
+    {
+        behaviorType = StepperMotorController::BehaviorType::STALKING;
+        isBehavior = true;
+    }
+    else if (name == "playing")
+    {
+        behaviorType = StepperMotorController::BehaviorType::PLAYING;
+        isBehavior = true;
+    }
+    else if (name == "resting")
+    {
+        behaviorType = StepperMotorController::BehaviorType::RESTING;
+        isBehavior = true;
+    }
+    else if (name == "hunting")
+    {
+        behaviorType = StepperMotorController::BehaviorType::HUNTING;
+        isBehavior = true;
+    }
+    else if (name == "victory")
+    {
+        behaviorType = StepperMotorController::BehaviorType::VICTORY;
+        isBehavior = true;
+    }
+
+    if (isBehavior)
+    {
+        bool started = stepperController->startBehavior(behaviorType);
+        if (started)
+        {
+            publishResponse("behavior", true, nullptr, requestId);
+            publishStatus(true);
+        }
+        else
+        {
+            publishResponse("behavior", false, "Behavior already running or stepper unavailable", requestId);
+        }
+        return;
+    }
+
+    // Unknown behavior/dance name
+    publishResponse("behavior", false, "Unknown behavior name", requestId);
+}
+
+// ─── Existing command handlers (updated publishResponse signatures) ──────────
 
 void MQTTController::handlePosition(const char* payload, size_t len)
 {
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, payload, len);
-    
+
     if (error)
     {
-        publishResponse("position", false, "Invalid JSON", error.c_str());
+        publishResponse("position", false, "Invalid JSON");
         return;
     }
-    
+
     if (!doc["position"].is<float>())
     {
-        publishResponse("position", false, "Missing or invalid 'position' parameter", "Expected float");
+        publishResponse("position", false, "Missing or invalid 'position' parameter");
         return;
     }
-    
+
+    // Extract request_id if present
+    const char* requestId = nullptr;
+    char ridBuf[64] = {0};
+    if (doc["request_id"].is<const char*>() || doc["request_id"].is<String>())
+    {
+        String rid = doc["request_id"].as<String>();
+        strncpy(ridBuf, rid.c_str(), sizeof(ridBuf) - 1);
+        requestId = ridBuf;
+    }
+
     float position = doc["position"].as<float>();
-    
+
     // Send command via queue
     if (commandQueue != nullptr)
     {
@@ -364,18 +631,17 @@ void MQTTController::handlePosition(const char* payload, size_t len)
         cmd.data.position.value = position;
         cmd.statusCallback = nullptr;
         cmd.statusContext = nullptr;
-        
+
         if (commandQueue->sendCommand(cmd, pdMS_TO_TICKS(100)))
         {
-            publishResponse("position", true, "Position command queued", nullptr);
+            publishResponse("position", true, nullptr, requestId);
             publishStatus(true); // Force status update
             pendingMoveComplete = true;
             strncpy(pendingMoveCommandType, "position", sizeof(pendingMoveCommandType) - 1);
             pendingMoveCommandType[sizeof(pendingMoveCommandType) - 1] = '\0';
-            if (doc["request_id"].is<const char*>() || doc["request_id"].is<String>())
+            if (requestId != nullptr)
             {
-                String rid = doc["request_id"].as<String>();
-                strncpy(pendingMoveRequestId, rid.c_str(), sizeof(pendingMoveRequestId) - 1);
+                strncpy(pendingMoveRequestId, requestId, sizeof(pendingMoveRequestId) - 1);
                 pendingMoveRequestId[sizeof(pendingMoveRequestId) - 1] = '\0';
             }
             else
@@ -385,22 +651,21 @@ void MQTTController::handlePosition(const char* payload, size_t len)
         }
         else
         {
-            publishResponse("position", false, "Command queue full", nullptr);
+            publishResponse("position", false, "Command queue full", requestId);
         }
     }
     else
     {
         // Fallback to direct call
         stepperController->moveToDegrees(position);
-        publishResponse("position", true, "Position set", nullptr);
+        publishResponse("position", true, nullptr, requestId);
         publishStatus(true);
         pendingMoveComplete = true;
         strncpy(pendingMoveCommandType, "position", sizeof(pendingMoveCommandType) - 1);
         pendingMoveCommandType[sizeof(pendingMoveCommandType) - 1] = '\0';
-        if (doc["request_id"].is<const char*>() || doc["request_id"].is<String>())
+        if (requestId != nullptr)
         {
-            String rid = doc["request_id"].as<String>();
-            strncpy(pendingMoveRequestId, rid.c_str(), sizeof(pendingMoveRequestId) - 1);
+            strncpy(pendingMoveRequestId, requestId, sizeof(pendingMoveRequestId) - 1);
             pendingMoveRequestId[sizeof(pendingMoveRequestId) - 1] = '\0';
         }
         else
@@ -414,35 +679,44 @@ void MQTTController::handleHeading(const char* payload, size_t len)
 {
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, payload, len);
-    
+
     if (error)
     {
-        publishResponse("heading", false, "Invalid JSON", error.c_str());
+        publishResponse("heading", false, "Invalid JSON");
         return;
     }
-    
+
     if (!doc["heading"].is<float>() && !doc["heading"].is<int>())
     {
-        publishResponse("heading", false, "Missing or invalid 'heading' parameter", "Expected float (0-360)");
+        publishResponse("heading", false, "Missing or invalid 'heading' parameter");
         return;
     }
-    
+
+    // Extract request_id if present
+    const char* requestId = nullptr;
+    char ridBuf[64] = {0};
+    if (doc["request_id"].is<const char*>() || doc["request_id"].is<String>())
+    {
+        String rid = doc["request_id"].as<String>();
+        strncpy(ridBuf, rid.c_str(), sizeof(ridBuf) - 1);
+        requestId = ridBuf;
+    }
+
     float heading = doc["heading"].as<float>();
-    
+
     // Direct call (uses moveToHeadingDegrees)
     bool success = stepperController->moveToHeadingDegrees(heading);
-    
+
     if (success)
     {
-        publishResponse("heading", true, "Moving to heading", nullptr);
+        publishResponse("heading", true, nullptr, requestId);
         publishStatus(true);
         pendingMoveComplete = true;
         strncpy(pendingMoveCommandType, "heading", sizeof(pendingMoveCommandType) - 1);
         pendingMoveCommandType[sizeof(pendingMoveCommandType) - 1] = '\0';
-        if (doc["request_id"].is<const char*>() || doc["request_id"].is<String>())
+        if (requestId != nullptr)
         {
-            String rid = doc["request_id"].as<String>();
-            strncpy(pendingMoveRequestId, rid.c_str(), sizeof(pendingMoveRequestId) - 1);
+            strncpy(pendingMoveRequestId, requestId, sizeof(pendingMoveRequestId) - 1);
             pendingMoveRequestId[sizeof(pendingMoveRequestId) - 1] = '\0';
         }
         else
@@ -452,7 +726,7 @@ void MQTTController::handleHeading(const char* payload, size_t len)
     }
     else
     {
-        publishResponse("heading", false, "Failed to move to heading", "Stepper not available");
+        publishResponse("heading", false, "Failed to move to heading", requestId);
     }
 }
 
@@ -460,21 +734,21 @@ void MQTTController::handleEnable(const char* payload, size_t len)
 {
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, payload, len);
-    
+
     if (error)
     {
-        publishResponse("enable", false, "Invalid JSON", error.c_str());
+        publishResponse("enable", false, "Invalid JSON");
         return;
     }
-    
+
     if (!doc["enable"].is<bool>())
     {
-        publishResponse("enable", false, "Missing or invalid 'enable' parameter", "Expected bool");
+        publishResponse("enable", false, "Missing or invalid 'enable' parameter");
         return;
     }
-    
+
     bool enable = doc["enable"].as<bool>();
-    
+
     // Send command via queue
     if (commandQueue != nullptr)
     {
@@ -483,22 +757,22 @@ void MQTTController::handleEnable(const char* payload, size_t len)
         cmd.data.enable.enable = enable;
         cmd.statusCallback = nullptr;
         cmd.statusContext = nullptr;
-        
+
         if (commandQueue->sendCommand(cmd, pdMS_TO_TICKS(100)))
         {
-            publishResponse("enable", true, enable ? "Motor enabled" : "Motor disabled", nullptr);
+            publishResponse("enable", true);
             publishStatus(true);
         }
         else
         {
-            publishResponse("enable", false, "Command queue full", nullptr);
+            publishResponse("enable", false, "Command queue full");
         }
     }
     else
     {
         // Fallback to direct call
         stepperController->enable(enable);
-        publishResponse("enable", true, enable ? "Motor enabled" : "Motor disabled", nullptr);
+        publishResponse("enable", true);
         publishStatus(true);
     }
 }
@@ -507,30 +781,30 @@ void MQTTController::handleSpeed(const char* payload, size_t len)
 {
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, payload, len);
-    
+
     if (error)
     {
-        publishResponse("speed", false, "Invalid JSON", error.c_str());
+        publishResponse("speed", false, "Invalid JSON");
         return;
     }
-    
+
     if (!doc["speed"].is<float>())
     {
-        publishResponse("speed", false, "Missing or invalid 'speed' parameter", "Expected float > 0");
+        publishResponse("speed", false, "Missing or invalid 'speed' parameter");
         return;
     }
-    
+
     float speed = doc["speed"].as<float>();
-    
+
     if (speed <= 0)
     {
-        publishResponse("speed", false, "Speed must be greater than 0", nullptr);
+        publishResponse("speed", false, "Speed must be greater than 0");
         return;
     }
-    
+
     // Direct call (settings)
     stepperController->setMaxSpeed(speed);
-    publishResponse("speed", true, "Max speed set", nullptr);
+    publishResponse("speed", true);
     publishStatus(true);
 }
 
@@ -538,30 +812,30 @@ void MQTTController::handleAcceleration(const char* payload, size_t len)
 {
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, payload, len);
-    
+
     if (error)
     {
-        publishResponse("acceleration", false, "Invalid JSON", error.c_str());
+        publishResponse("acceleration", false, "Invalid JSON");
         return;
     }
-    
+
     if (!doc["accel"].is<float>())
     {
-        publishResponse("acceleration", false, "Missing or invalid 'accel' parameter", "Expected float > 0");
+        publishResponse("acceleration", false, "Missing or invalid 'accel' parameter");
         return;
     }
-    
+
     float accel = doc["accel"].as<float>();
-    
+
     if (accel <= 0)
     {
-        publishResponse("acceleration", false, "Acceleration must be greater than 0", nullptr);
+        publishResponse("acceleration", false, "Acceleration must be greater than 0");
         return;
     }
-    
+
     // Direct call (settings)
     stepperController->setAcceleration(accel);
-    publishResponse("acceleration", true, "Acceleration set", nullptr);
+    publishResponse("acceleration", true);
     publishStatus(true);
 }
 
@@ -569,30 +843,30 @@ void MQTTController::handleMicrosteps(const char* payload, size_t len)
 {
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, payload, len);
-    
+
     if (error)
     {
-        publishResponse("microsteps", false, "Invalid JSON", error.c_str());
+        publishResponse("microsteps", false, "Invalid JSON");
         return;
     }
-    
+
     if (!doc["microsteps"].is<int>())
     {
-        publishResponse("microsteps", false, "Missing or invalid 'microsteps' parameter", "Expected int");
+        publishResponse("microsteps", false, "Missing or invalid 'microsteps' parameter");
         return;
     }
-    
+
     int microsteps = doc["microsteps"].as<int>();
-    
+
     // Direct call (settings)
     if (stepperController->setMicrosteps(microsteps))
     {
-        publishResponse("microsteps", true, "Microstepping set", nullptr);
+        publishResponse("microsteps", true);
         publishStatus(true);
     }
     else
     {
-        publishResponse("microsteps", false, "Invalid microstepping value", "Must be 1, 2, 4, 8, 16, 32, 64, 128, or 256");
+        publishResponse("microsteps", false, "Invalid microstepping value");
     }
 }
 
@@ -600,30 +874,30 @@ void MQTTController::handleGearRatio(const char* payload, size_t len)
 {
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, payload, len);
-    
+
     if (error)
     {
-        publishResponse("gearratio", false, "Invalid JSON", error.c_str());
+        publishResponse("gearratio", false, "Invalid JSON");
         return;
     }
-    
+
     if (!doc["ratio"].is<float>())
     {
-        publishResponse("gearratio", false, "Missing or invalid 'ratio' parameter", "Expected float");
+        publishResponse("gearratio", false, "Missing or invalid 'ratio' parameter");
         return;
     }
-    
+
     float ratio = doc["ratio"].as<float>();
-    
+
     if (ratio <= 0.0f || ratio > 100.0f)
     {
-        publishResponse("gearratio", false, "Invalid gear ratio value", "Must be between 0.1 and 100.0");
+        publishResponse("gearratio", false, "Invalid gear ratio value");
         return;
     }
-    
+
     // Direct call (settings)
     stepperController->setGearRatio(ratio);
-    publishResponse("gearratio", true, "Gear ratio set", nullptr);
+    publishResponse("gearratio", true);
     publishStatus(true);
 }
 
@@ -631,30 +905,30 @@ void MQTTController::handleSpeedHz(const char* payload, size_t len)
 {
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, payload, len);
-    
+
     if (error)
     {
-        publishResponse("speedHz", false, "Invalid JSON", error.c_str());
+        publishResponse("speedHz", false, "Invalid JSON");
         return;
     }
-    
+
     if (!doc["speedHz"].is<float>())
     {
-        publishResponse("speedHz", false, "Missing or invalid 'speedHz' parameter", "Expected float >= 0");
+        publishResponse("speedHz", false, "Missing or invalid 'speedHz' parameter");
         return;
     }
-    
+
     float speedHz = doc["speedHz"].as<float>();
-    
+
     if (speedHz < 0)
     {
-        publishResponse("speedHz", false, "Speed must be >= 0 Hz", nullptr);
+        publishResponse("speedHz", false, "Speed must be >= 0 Hz");
         return;
     }
-    
+
     // Direct call (immediate action)
     stepperController->setSpeedInHz(speedHz);
-    publishResponse("speedHz", true, "Speed set", nullptr);
+    publishResponse("speedHz", true);
     publishStatus(true);
 }
 
@@ -662,7 +936,7 @@ void MQTTController::handleRunForward(const char* payload, size_t len)
 {
     // Direct call (immediate action)
     stepperController->runForward();
-    publishResponse("runForward", true, "Forward rotation started", nullptr);
+    publishResponse("runForward", true);
     publishStatus(true);
 }
 
@@ -670,7 +944,7 @@ void MQTTController::handleRunBackward(const char* payload, size_t len)
 {
     // Direct call (immediate action)
     stepperController->runBackward();
-    publishResponse("runBackward", true, "Backward rotation started", nullptr);
+    publishResponse("runBackward", true);
     publishStatus(true);
 }
 
@@ -681,7 +955,7 @@ void MQTTController::handleStopMove(const char* payload, size_t len)
     pendingMoveRequestId[0] = '\0';
     // Direct call (immediate action)
     stepperController->stopMove();
-    publishResponse("stopMove", true, "Move stopped", nullptr);
+    publishResponse("stopMove", true);
     publishStatus(true);
 }
 
@@ -692,7 +966,7 @@ void MQTTController::handleForceStop(const char* payload, size_t len)
     pendingMoveRequestId[0] = '\0';
     // Direct call (immediate action)
     stepperController->stopVelocity();
-    publishResponse("forceStop", true, "Force stop executed", nullptr);
+    publishResponse("forceStop", true);
     publishStatus(true);
 }
 
@@ -700,15 +974,15 @@ void MQTTController::handleReset(const char* payload, size_t len)
 {
     // Direct call (immediate)
     bool success = stepperController->resetEngine();
-    
+
     if (success)
     {
-        publishResponse("reset", true, "Engine reset successfully", nullptr);
+        publishResponse("reset", true);
         publishStatus(true);
     }
     else
     {
-        publishResponse("reset", false, "Failed to reset engine", nullptr);
+        publishResponse("reset", false, "Failed to reset engine");
     }
 }
 
@@ -721,25 +995,37 @@ void MQTTController::handleZero(const char* payload, size_t len)
         cmd.type = MotorCommandType::ZERO_POSITION;
         cmd.statusCallback = nullptr;
         cmd.statusContext = nullptr;
-        
+
         if (commandQueue->sendCommand(cmd, pdMS_TO_TICKS(100)))
         {
-            publishResponse("zero", true, "Zero position command queued", nullptr);
+            publishResponse("zero", true);
             publishStatus(true);
         }
         else
         {
-            publishResponse("zero", false, "Command queue full", nullptr);
+            publishResponse("zero", false, "Command queue full");
         }
     }
     else
     {
-        publishResponse("zero", false, "Command queue not available", nullptr);
+        publishResponse("zero", false, "Command queue not available");
     }
 }
 
 void MQTTController::handleHome(const char* payload, size_t len)
 {
+    // Extract request_id if present
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, payload, len);
+    const char* requestId = nullptr;
+    char ridBuf[64] = {0};
+    if (!error && (doc["request_id"].is<const char*>() || doc["request_id"].is<String>()))
+    {
+        String rid = doc["request_id"].as<String>();
+        strncpy(ridBuf, rid.c_str(), sizeof(ridBuf) - 1);
+        requestId = ridBuf;
+    }
+
     // Send command via queue
     if (commandQueue != nullptr)
     {
@@ -747,209 +1033,32 @@ void MQTTController::handleHome(const char* payload, size_t len)
         cmd.type = MotorCommandType::HOME;
         cmd.statusCallback = nullptr;
         cmd.statusContext = nullptr;
-        
+
         if (commandQueue->sendCommand(cmd, pdMS_TO_TICKS(100)))
         {
-            publishResponse("home", true, "Home command queued", nullptr);
+            publishResponse("home", true, nullptr, requestId);
             publishStatus(true);
         }
         else
         {
-            publishResponse("home", false, "Command queue full", nullptr);
+            publishResponse("home", false, "Command queue full", requestId);
         }
     }
     else
     {
-        publishResponse("home", false, "Command queue not available", nullptr);
+        publishResponse("home", false, "Command queue not available", requestId);
     }
 }
 
-void MQTTController::handleDance(const char* payload, size_t len)
-{
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, payload, len);
-    
-    if (error)
-    {
-        publishResponse("dance", false, "Invalid JSON", error.c_str());
-        return;
-    }
-    
-    if (!doc["danceType"].is<const char*>() && !doc["danceType"].is<String>())
-    {
-        publishResponse("dance", false, "Missing or invalid 'danceType' parameter", "Expected string");
-        return;
-    }
-    
-    String danceTypeStr = doc["danceType"].as<String>();
-    danceTypeStr.toLowerCase();
-    
-    StepperMotorController::DanceType danceType;
-    if (danceTypeStr == "twist")
-    {
-        danceType = StepperMotorController::DanceType::TWIST;
-    }
-    else if (danceTypeStr == "shake")
-    {
-        danceType = StepperMotorController::DanceType::SHAKE;
-    }
-    else if (danceTypeStr == "spin")
-    {
-        danceType = StepperMotorController::DanceType::SPIN;
-    }
-    else if (danceTypeStr == "wiggle")
-    {
-        danceType = StepperMotorController::DanceType::WIGGLE;
-    }
-    else if (danceTypeStr == "watusi")
-    {
-        danceType = StepperMotorController::DanceType::WATUSI;
-    }
-    else if (danceTypeStr == "pepperminttwist" || danceTypeStr == "peppermint_twist")
-    {
-        danceType = StepperMotorController::DanceType::PEPPERMINT_TWIST;
-    }
-    else
-    {
-        publishResponse("dance", false, "Invalid danceType", "Must be 'twist', 'shake', 'spin', 'wiggle', 'watusi', or 'peppermintTwist'");
-        return;
-    }
-    
-    // Direct call (background task)
-    bool success = stepperController->startDance(danceType);
-    
-    if (success)
-    {
-        publishResponse("dance", true, "Dance started", nullptr);
-        publishStatus(true);
-    }
-    else
-    {
-        publishResponse("dance", false, "Dance failed to start", "Dance already in progress or stepper unavailable");
-    }
-}
+// ─── Static callback wrappers ────────────────────────────────────────────────
 
-void MQTTController::handleStopDance(const char* payload, size_t len)
-{
-    // Direct call (background task)
-    bool success = stepperController->stopDance();
-    
-    if (success)
-    {
-        publishResponse("stopDance", true, "Dance stopped", nullptr);
-        publishStatus(true);
-    }
-    else
-    {
-        publishResponse("stopDance", false, "No dance in progress", nullptr);
-    }
-}
-
-void MQTTController::handleBehavior(const char* payload, size_t len)
-{
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, payload, len);
-    
-    if (error)
-    {
-        publishResponse("behavior", false, "Invalid JSON", error.c_str());
-        return;
-    }
-    
-    if (!doc["behaviorType"].is<const char*>() && !doc["behaviorType"].is<String>())
-    {
-        publishResponse("behavior", false, "Missing or invalid 'behaviorType' parameter", "Expected string");
-        return;
-    }
-    
-    String behaviorTypeStr = doc["behaviorType"].as<String>();
-    behaviorTypeStr.toLowerCase();
-    
-    StepperMotorController::BehaviorType behaviorType;
-    if (behaviorTypeStr == "scanning")
-    {
-        behaviorType = StepperMotorController::BehaviorType::SCANNING;
-    }
-    else if (behaviorTypeStr == "sleeping")
-    {
-        behaviorType = StepperMotorController::BehaviorType::SLEEPING;
-    }
-    else if (behaviorTypeStr == "eating")
-    {
-        behaviorType = StepperMotorController::BehaviorType::EATING;
-    }
-    else if (behaviorTypeStr == "alert")
-    {
-        behaviorType = StepperMotorController::BehaviorType::ALERT;
-    }
-    else if (behaviorTypeStr == "roaring")
-    {
-        behaviorType = StepperMotorController::BehaviorType::ROARING;
-    }
-    else if (behaviorTypeStr == "stalking")
-    {
-        behaviorType = StepperMotorController::BehaviorType::STALKING;
-    }
-    else if (behaviorTypeStr == "playing")
-    {
-        behaviorType = StepperMotorController::BehaviorType::PLAYING;
-    }
-    else if (behaviorTypeStr == "resting")
-    {
-        behaviorType = StepperMotorController::BehaviorType::RESTING;
-    }
-    else if (behaviorTypeStr == "hunting")
-    {
-        behaviorType = StepperMotorController::BehaviorType::HUNTING;
-    }
-    else if (behaviorTypeStr == "victory")
-    {
-        behaviorType = StepperMotorController::BehaviorType::VICTORY;
-    }
-    else
-    {
-        publishResponse("behavior", false, "Unknown behaviorType", nullptr);
-        return;
-    }
-    
-    // Direct call (background task)
-    bool started = stepperController->startBehavior(behaviorType);
-    
-    if (started)
-    {
-        publishResponse("behavior", true, "Behavior started", nullptr);
-        publishStatus(true);
-    }
-    else
-    {
-        publishResponse("behavior", false, "Behavior already running or stepper unavailable", nullptr);
-    }
-}
-
-void MQTTController::handleStopBehavior(const char* payload, size_t len)
-{
-    // Direct call (background task)
-    bool success = stepperController->stopBehavior();
-    
-    if (success)
-    {
-        publishResponse("stopBehavior", true, "Behavior stopped", nullptr);
-        publishStatus(true);
-    }
-    else
-    {
-        publishResponse("stopBehavior", false, "No behavior in progress", nullptr);
-    }
-}
-
-// Static callback wrappers
 void MQTTController::onMqttConnect(bool sessionPresent)
 {
     if (instance == nullptr)
     {
         return;
     }
-    
+
     Serial.println("[MQTT] ========================================");
     Serial.println("[MQTT] CONNECTED TO BROKER");
     Serial.printf("[MQTT] Session present: %s\n", sessionPresent ? "Yes (resumed)" : "No (new session)");
@@ -957,15 +1066,18 @@ void MQTTController::onMqttConnect(bool sessionPresent)
     Serial.printf("[MQTT] Device ID: %s\n", instance->config.deviceId);
     Serial.printf("[MQTT] Keepalive: %u seconds\n", instance->config.keepalive);
     Serial.println("[MQTT] ========================================");
-    
-    // Publish online status (LWT)
-    uint16_t onlinePacketId = instance->mqttClient.publish(instance->onlineTopic, instance->config.qosStatus, true, "online", 6);
-    Serial.printf("[MQTT] Published online status to %s (packet ID: %u, retained)\n", instance->onlineTopic, onlinePacketId);
-    
+
+    // KRP v1.0 birth sequence
+    instance->publishBirthMessages();
+
     // Subscribe to commands
     instance->subscribeToCommands();
-    
-    // Publish initial status and full status
+
+    // Transition to ready state
+    instance->mqttClient.publish(instance->stateTopic, 1, true, "ready", 5);
+    Serial.printf("[MQTT] Published $state=ready to %s (retained)\n", instance->stateTopic);
+
+    // Publish initial status
     Serial.println("[MQTT] Publishing initial status...");
     instance->publishStatus(true);
     Serial.println("[MQTT] Initial status published");
@@ -977,13 +1089,13 @@ void MQTTController::onMqttDisconnect(AsyncMqttClientDisconnectReason reason)
     {
         return;
     }
-    
+
     Serial.println("[MQTT] ========================================");
     Serial.println("[MQTT] DISCONNECTED FROM BROKER");
     Serial.print("[MQTT] Reason code: ");
     Serial.print((int)reason);
     Serial.print(" (");
-    
+
     // Human-readable disconnect reasons
     switch (reason)
     {
@@ -1016,7 +1128,7 @@ void MQTTController::onMqttDisconnect(AsyncMqttClientDisconnectReason reason)
             break;
     }
     Serial.println(")");
-    
+
     if (instance->config.broker != nullptr)
     {
         Serial.printf("[MQTT] Broker was: %s:%u\n", instance->config.broker, instance->config.port);
@@ -1089,7 +1201,8 @@ void MQTTController::onMqttPublish(uint16_t packetId)
     }
 }
 
-// FreeRTOS task
+// ─── FreeRTOS task ───────────────────────────────────────────────────────────
+
 void MQTTController::mqttTaskWrapper(void* parameter)
 {
     MQTTController* controller = static_cast<MQTTController*>(parameter);
@@ -1145,27 +1258,29 @@ void MQTTController::mqttTask()
     }
 }
 
+// ─── Initialization ──────────────────────────────────────────────────────────
+
 bool MQTTController::begin(StepperMotorController* stepperCtrl, MotorCommandQueue* cmdQueue, const MQTTConfig* cfg, ConfigurationManager* configMgr)
 {
     stepperController = stepperCtrl;
     commandQueue = cmdQueue;
     configManager = configMgr;
-    
+
     if (cfg != nullptr)
     {
         config = *cfg;
     }
-    
+
     Serial.println("[MQTT] ========================================");
     Serial.println("[MQTT] Initializing MQTT Controller...");
-    
+
     if (!config.enabled)
     {
         Serial.println("[MQTT] MQTT disabled in configuration - aborting initialization");
         Serial.println("[MQTT] ========================================");
         return false;
     }
-    
+
     // Check WiFi connection
     if (WiFi.status() != WL_CONNECTED)
     {
@@ -1174,12 +1289,12 @@ bool MQTTController::begin(StepperMotorController* stepperCtrl, MotorCommandQueu
         Serial.println("[MQTT] ========================================");
         return false;
     }
-    
+
     Serial.printf("[MQTT] WiFi connected: %s\n", WiFi.localIP().toString().c_str());
-    
+
     // Build topic strings
     buildTopics();
-    
+
     // Create command queue
     mqttCommandQueue = xQueueCreate(MQTT_QUEUE_SIZE, sizeof(MQTTCommand));
     if (mqttCommandQueue == nullptr)
@@ -1189,21 +1304,21 @@ bool MQTTController::begin(StepperMotorController* stepperCtrl, MotorCommandQueu
         return false;
     }
     Serial.printf("[MQTT] Command queue created (size: %zu)\n", MQTT_QUEUE_SIZE);
-    
+
     // Setup MQTT client callbacks
     Serial.println("[MQTT] Registering callbacks...");
     mqttClient.onConnect(onMqttConnect);
     mqttClient.onDisconnect(onMqttDisconnect);
     mqttClient.onMessage(onMqttMessage);
     mqttClient.onPublish(onMqttPublish);
-    
+
     // Configure MQTT client
     Serial.println("[MQTT] Configuring client...");
     mqttClient.setServer(config.broker, config.port);
     mqttClient.setKeepAlive(config.keepalive);
     Serial.printf("[MQTT] Server: %s:%u\n", config.broker, config.port);
     Serial.printf("[MQTT] Keepalive: %u seconds\n", config.keepalive);
-    
+
     if (strlen(config.username) > 0)
     {
         mqttClient.setCredentials(config.username, config.password);
@@ -1213,11 +1328,11 @@ bool MQTTController::begin(StepperMotorController* stepperCtrl, MotorCommandQueu
     {
         Serial.println("[MQTT] Authentication: None (anonymous)");
     }
-    
-    // Set LWT (Last Will and Testament)
-    mqttClient.setWill(onlineTopic, config.qosStatus, true, "offline", 7);
-    Serial.printf("[MQTT] LWT configured: %s (QoS %u, retained)\n", onlineTopic, config.qosStatus);
-    
+
+    // Set LWT (Last Will and Testament) - KRP v1.0: $state → "offline"
+    mqttClient.setWill(stateTopic, 1, true, "offline", 7);
+    Serial.printf("[MQTT] LWT configured: %s (QoS 1, retained)\n", stateTopic);
+
     // Connect to broker
     Serial.println("[MQTT] ========================================");
     Serial.print("[MQTT] Attempting connection to broker: ");
@@ -1225,9 +1340,9 @@ bool MQTTController::begin(StepperMotorController* stepperCtrl, MotorCommandQueu
     Serial.print(":");
     Serial.println(config.port);
     Serial.println("[MQTT] Waiting for connection callback...");
-    
+
     mqttClient.connect();
-    
+
     // Create FreeRTOS task for command processing
     xTaskCreatePinnedToCore(
         mqttTaskWrapper,
@@ -1238,14 +1353,14 @@ bool MQTTController::begin(StepperMotorController* stepperCtrl, MotorCommandQueu
         &mqttTaskHandle,
         0 // Core 0
     );
-    
+
     if (mqttTaskHandle == nullptr)
     {
         Serial.println("[MQTT] ERROR: Failed to create MQTT task");
         Serial.println("[MQTT] ========================================");
         return false;
     }
-    
+
     Serial.printf("[MQTT] MQTT task created (handle: %p, stack: 4096 bytes, priority: 2, core: 0)\n", mqttTaskHandle);
     Serial.println("[MQTT] Controller initialization complete");
     Serial.println("[MQTT] Note: Connection status will be reported in connect/disconnect callbacks");
@@ -1265,11 +1380,13 @@ bool MQTTController::isConnected() const
     return mqttClient.connected();
 }
 
+// ─── Task 5: setConfig and restart ───────────────────────────────────────────
+
 void MQTTController::setConfig(const MQTTConfig& cfg)
 {
     config = cfg;
     buildTopics();
-    
+
     // Save configuration to ConfigurationManager if available
     if (configManager != nullptr)
     {
@@ -1279,26 +1396,26 @@ void MQTTController::setConfig(const MQTTConfig& cfg)
         configManager->setMqttUsername(config.username);
         configManager->setMqttPassword(config.password);
         configManager->setMqttDeviceId(config.deviceId);
-        configManager->setMqttBaseTopic(config.baseTopic);
+        configManager->setMqttBaseTopic(config.baseTopic);  // deprecated field, kept for HTTPServerController compat
         configManager->setMqttQosCommands(config.qosCommands);
         configManager->setMqttQosStatus(config.qosStatus);
         configManager->setMqttKeepalive(config.keepalive);
         configManager->save();
     }
-    
+
     // Reconnect if currently connected
     if (mqttClient.connected())
     {
         mqttClient.disconnect();
         mqttClient.setServer(config.broker, config.port);
         mqttClient.setKeepAlive(config.keepalive);
-        
+
         if (strlen(config.username) > 0)
         {
             mqttClient.setCredentials(config.username, config.password);
         }
-        
-        mqttClient.setWill(onlineTopic, config.qosStatus, true, "offline", 7);
+
+        mqttClient.setWill(stateTopic, 1, true, "offline", 7);
         mqttClient.connect();
     }
 }
@@ -1315,13 +1432,13 @@ bool MQTTController::restart()
         }
         return false;
     }
-    
+
     if (WiFi.status() != WL_CONNECTED)
     {
         Serial.println("[MQTT] Cannot restart - WiFi not connected");
         return false;
     }
-    
+
     // If MQTT was never initialized (begin() never called successfully), we can't restart
     // User needs to reboot for initial setup
     if (mqttTaskHandle == nullptr)
@@ -1329,13 +1446,17 @@ bool MQTTController::restart()
         Serial.println("[MQTT] Cannot restart - MQTT was not previously initialized. Please reboot device.");
         return false;
     }
-    
+
     Serial.println("[MQTT] ========================================");
     Serial.println("[MQTT] Restarting MQTT connection...");
-    
+
     // Disconnect if currently connected
     if (mqttClient.connected())
     {
+        // Graceful KRP shutdown: publish offline before disconnect
+        Serial.println("[MQTT] Publishing offline state (graceful shutdown)...");
+        mqttClient.publish(stateTopic, 1, true, "offline", 7);
+
         Serial.println("[MQTT] Disconnecting existing connection...");
         mqttClient.disconnect();
         // Wait a bit for disconnect to complete
@@ -1346,18 +1467,18 @@ bool MQTTController::restart()
     {
         Serial.println("[MQTT] No existing connection to disconnect");
     }
-    
+
     // Rebuild topics in case config changed
     Serial.println("[MQTT] Rebuilding topics...");
     buildTopics();
-    
+
     // Reconfigure client
     Serial.println("[MQTT] Reconfiguring client...");
     mqttClient.setServer(config.broker, config.port);
     mqttClient.setKeepAlive(config.keepalive);
     Serial.printf("[MQTT] Server: %s:%u\n", config.broker, config.port);
     Serial.printf("[MQTT] Keepalive: %u seconds\n", config.keepalive);
-    
+
     if (strlen(config.username) > 0)
     {
         mqttClient.setCredentials(config.username, config.password);
@@ -1368,10 +1489,10 @@ bool MQTTController::restart()
         mqttClient.setCredentials("", "");
         Serial.println("[MQTT] Authentication: None (anonymous)");
     }
-    
-    mqttClient.setWill(onlineTopic, config.qosStatus, true, "offline", 7);
-    Serial.printf("[MQTT] LWT configured: %s (QoS %u, retained)\n", onlineTopic, config.qosStatus);
-    
+
+    mqttClient.setWill(stateTopic, 1, true, "offline", 7);
+    Serial.printf("[MQTT] LWT configured: %s (QoS 1, retained)\n", stateTopic);
+
     // Connect
     Serial.println("[MQTT] ========================================");
     Serial.print("[MQTT] Attempting connection to broker: ");
@@ -1379,8 +1500,8 @@ bool MQTTController::restart()
     Serial.print(":");
     Serial.println(config.port);
     Serial.println("[MQTT] Waiting for connection callback...");
-    
+
     mqttClient.connect();
-    
+
     return true;
 }
