@@ -97,6 +97,7 @@ void MQTTController::publishBirthMessages()
     JsonDocument doc;
     doc["device_id"] = config.deviceId;
     doc["device_type"] = "turntable";
+    doc["device_class"] = "turntable";
     doc["name"] = config.deviceName;
     doc["platform"] = "esp32s3";
     doc["protocol_version"] = "1.0";
