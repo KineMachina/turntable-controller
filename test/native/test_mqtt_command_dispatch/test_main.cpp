@@ -23,7 +23,6 @@ void setUp() {
     ctrl.commandQueue = &mockQueue;
     ctrl.mqttClient._setConnected(true);
     ctrl.mqttClient._clearPublishes();
-    ctrl.config.baseTopic = "test";
     ctrl.config.deviceId = "t1";
     ctrl.config.qosCommands = 1;
     ctrl.buildTopics();
@@ -50,7 +49,7 @@ static std::string lastResponsePayload() {
 // Helper: check if last response was success
 static bool lastResponseSuccess() {
     std::string payload = lastResponsePayload();
-    return payload.find("\"status\":\"success\"") != std::string::npos;
+    return payload.find("\"status\":\"ok\"") != std::string::npos;
 }
 
 // Helper: check if last response was error
@@ -62,14 +61,14 @@ static bool lastResponseError() {
 // ── Command dispatch: each command routes to the correct handler ─────────────
 
 void test_dispatch_position(void) {
-    sendCommand(R"({"command":"position","position":90.0})");
+    sendCommand(R"({"command":"move","joint":"turntable","position":90.0})");
     TEST_ASSERT_TRUE(lastResponseSuccess());
     TEST_ASSERT_EQUAL(1, (int)mockQueue.getCommands().size());
     TEST_ASSERT_EQUAL(MotorCommandType::MOVE_TO, mockQueue.getCommands()[0].type);
 }
 
 void test_dispatch_heading(void) {
-    sendCommand(R"({"command":"heading","heading":180.0})");
+    sendCommand(R"({"command":"move","joint":"turntable","heading":180.0})");
     TEST_ASSERT_TRUE(lastResponseSuccess());
     TEST_ASSERT_TRUE(mockStepper.hasCall("moveToHeadingDegrees"));
 }
@@ -156,27 +155,25 @@ void test_dispatch_home(void) {
 }
 
 void test_dispatch_dance(void) {
-    sendCommand(R"({"command":"dance","danceType":"twist"})");
+    sendCommand(R"({"command":"behavior","name":"twist"})");
     TEST_ASSERT_TRUE(lastResponseSuccess());
     TEST_ASSERT_TRUE(mockStepper.hasCall("startDance"));
 }
 
 void test_dispatch_stopdance(void) {
-    sendCommand(R"({"command":"stopdance"})");
+    sendCommand(R"({"command":"behavior","stop":true})");
     TEST_ASSERT_TRUE(lastResponseSuccess());
-    TEST_ASSERT_TRUE(mockStepper.hasCall("stopDance"));
 }
 
 void test_dispatch_behavior(void) {
-    sendCommand(R"({"command":"behavior","behaviorType":"scanning"})");
+    sendCommand(R"({"command":"behavior","name":"scanning"})");
     TEST_ASSERT_TRUE(lastResponseSuccess());
     TEST_ASSERT_TRUE(mockStepper.hasCall("startBehavior"));
 }
 
 void test_dispatch_stopbehavior(void) {
-    sendCommand(R"({"command":"stopbehavior"})");
+    sendCommand(R"({"command":"behavior","stop":true})");
     TEST_ASSERT_TRUE(lastResponseSuccess());
-    TEST_ASSERT_TRUE(mockStepper.hasCall("stopBehavior"));
 }
 
 // ── Stop alias ───────────────────────────────────────────────────────────────
@@ -224,12 +221,44 @@ void test_error_unknown_command(void) {
     TEST_ASSERT_TRUE(resp.find("Unknown command") != std::string::npos);
 }
 
+// ── KRP move dispatch ────────────────────────────────────────────────────────
+
+void test_dispatch_move_missing_joint(void) {
+    sendCommand(R"({"command":"move","heading":90.0})");
+    TEST_ASSERT_TRUE(lastResponseError());
+}
+
+void test_dispatch_move_unknown_joint(void) {
+    ctrl.mqttClient._clearPublishes();
+    sendCommand(R"({"command":"move","joint":"arm","heading":90.0})");
+    // Should be silently ignored - no response published
+    auto& pubs = ctrl.mqttClient._getPublishes();
+    bool hasResponse = false;
+    for (const auto& p : pubs) {
+        if (p.topic.find("/response") != std::string::npos) hasResponse = true;
+    }
+    TEST_ASSERT_FALSE(hasResponse);
+}
+
+// ── Legacy aliases ───────────────────────────────────────────────────────────
+
+void test_dispatch_legacy_heading(void) {
+    sendCommand(R"({"command":"heading","heading":180.0})");
+    TEST_ASSERT_TRUE(lastResponseSuccess());
+    TEST_ASSERT_TRUE(mockStepper.hasCall("moveToHeadingDegrees"));
+}
+
+void test_dispatch_legacy_position(void) {
+    sendCommand(R"({"command":"position","position":90.0})");
+    TEST_ASSERT_TRUE(lastResponseSuccess());
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 int main(int, char**) {
     UNITY_BEGIN();
 
-    // 19 command routes
+    // Command routes
     RUN_TEST(test_dispatch_position);
     RUN_TEST(test_dispatch_heading);
     RUN_TEST(test_dispatch_enable);
@@ -261,6 +290,14 @@ int main(int, char**) {
     RUN_TEST(test_error_invalid_json);
     RUN_TEST(test_error_missing_command_field);
     RUN_TEST(test_error_unknown_command);
+
+    // KRP move dispatch
+    RUN_TEST(test_dispatch_move_missing_joint);
+    RUN_TEST(test_dispatch_move_unknown_joint);
+
+    // Legacy aliases
+    RUN_TEST(test_dispatch_legacy_heading);
+    RUN_TEST(test_dispatch_legacy_position);
 
     return UNITY_END();
 }

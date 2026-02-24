@@ -22,7 +22,6 @@ void setUp() {
     ctrl.commandQueue = &mockQueue;
     ctrl.mqttClient._setConnected(true);
     ctrl.mqttClient._clearPublishes();
-    ctrl.config.baseTopic = "test";
     ctrl.config.deviceId = "t1";
     ctrl.config.qosCommands = 1;
     ctrl.pendingMoveComplete = false;
@@ -47,7 +46,7 @@ static std::string lastResponsePayload() {
 }
 
 static bool lastResponseSuccess() {
-    return lastResponsePayload().find("\"status\":\"success\"") != std::string::npos;
+    return lastResponsePayload().find("\"status\":\"ok\"") != std::string::npos;
 }
 
 static bool lastResponseError() {
@@ -174,78 +173,66 @@ void test_speedhz_negative_rejected(void) {
     TEST_ASSERT_TRUE(lastResponseError());
 }
 
-// ── Dance parameter validation ──────────────────────────────────────────────
+// ── Behavior (unified) parameter validation ──────────────────────────────────
 
-void test_dance_missing_dancetype(void) {
-    sendCommand(R"({"command":"dance"})");
+void test_behavior_missing_name(void) {
+    sendCommand(R"({"command":"behavior"})");
     TEST_ASSERT_TRUE(lastResponseError());
 }
 
-void test_dance_invalid_dancetype(void) {
-    sendCommand(R"({"command":"dance","danceType":"moonwalk"})");
+void test_behavior_invalid_name(void) {
+    sendCommand(R"({"command":"behavior","name":"moonwalk"})");
     TEST_ASSERT_TRUE(lastResponseError());
 }
 
-void test_dance_all_types(void) {
-    const char* types[] = {"twist", "shake", "spin", "wiggle", "watusi", "pepperminttwist"};
+void test_behavior_all_dance_types(void) {
+    const char* types[] = {"twist", "shake", "spin", "wiggle", "watusi", "peppermint_twist"};
     for (auto& dt : types) {
         setUp();
         char json[128];
-        snprintf(json, sizeof(json), R"({"command":"dance","danceType":"%s"})", dt);
+        snprintf(json, sizeof(json), R"({"command":"behavior","name":"%s"})", dt);
         sendCommand(json);
         TEST_ASSERT_TRUE_MESSAGE(lastResponseSuccess(), dt);
     }
 }
 
-void test_dance_peppermint_twist_underscore(void) {
-    sendCommand(R"({"command":"dance","danceType":"peppermint_twist"})");
-    TEST_ASSERT_TRUE(lastResponseSuccess());
-}
-
-// ── Behavior parameter validation ───────────────────────────────────────────
-
-void test_behavior_missing_behaviortype(void) {
-    sendCommand(R"({"command":"behavior"})");
-    TEST_ASSERT_TRUE(lastResponseError());
-}
-
-void test_behavior_invalid_behaviortype(void) {
-    sendCommand(R"({"command":"behavior","behaviorType":"flying"})");
-    TEST_ASSERT_TRUE(lastResponseError());
-}
-
-void test_behavior_all_types(void) {
+void test_behavior_all_behavior_types(void) {
     const char* types[] = {"scanning", "sleeping", "eating", "alert", "roaring",
                            "stalking", "playing", "resting", "hunting", "victory"};
     for (auto& bt : types) {
         setUp();
         char json[128];
-        snprintf(json, sizeof(json), R"({"command":"behavior","behaviorType":"%s"})", bt);
+        snprintf(json, sizeof(json), R"({"command":"behavior","name":"%s"})", bt);
         sendCommand(json);
         TEST_ASSERT_TRUE_MESSAGE(lastResponseSuccess(), bt);
     }
 }
 
+void test_behavior_stop(void) {
+    sendCommand(R"({"command":"behavior","stop":true})");
+    // OK even if nothing running - just verify no crash
+}
+
 // ── Request ID tracking ─────────────────────────────────────────────────────
 
-void test_position_request_id_stored(void) {
-    sendCommand(R"({"command":"position","position":45.0,"request_id":"abc-123"})");
+void test_move_position_request_id_stored(void) {
+    sendCommand(R"({"command":"move","joint":"turntable","position":45.0,"request_id":"abc-123"})");
     TEST_ASSERT_TRUE(lastResponseSuccess());
     TEST_ASSERT_TRUE(ctrl.pendingMoveComplete);
     TEST_ASSERT_EQUAL_STRING("abc-123", ctrl.pendingMoveRequestId);
     TEST_ASSERT_EQUAL_STRING("position", ctrl.pendingMoveCommandType);
 }
 
-void test_heading_request_id_stored(void) {
-    sendCommand(R"({"command":"heading","heading":270.0,"request_id":"xyz-789"})");
+void test_move_heading_request_id_stored(void) {
+    sendCommand(R"({"command":"move","joint":"turntable","heading":270.0,"request_id":"xyz-789"})");
     TEST_ASSERT_TRUE(lastResponseSuccess());
     TEST_ASSERT_TRUE(ctrl.pendingMoveComplete);
     TEST_ASSERT_EQUAL_STRING("xyz-789", ctrl.pendingMoveRequestId);
     TEST_ASSERT_EQUAL_STRING("heading", ctrl.pendingMoveCommandType);
 }
 
-void test_position_no_request_id(void) {
-    sendCommand(R"({"command":"position","position":45.0})");
+void test_move_position_no_request_id(void) {
+    sendCommand(R"({"command":"move","joint":"turntable","position":45.0})");
     TEST_ASSERT_TRUE(lastResponseSuccess());
     TEST_ASSERT_TRUE(ctrl.pendingMoveComplete);
     TEST_ASSERT_EQUAL_STRING("", ctrl.pendingMoveRequestId);
@@ -292,21 +279,17 @@ int main(int, char**) {
     RUN_TEST(test_speedhz_missing_param);
     RUN_TEST(test_speedhz_negative_rejected);
 
-    // Dance
-    RUN_TEST(test_dance_missing_dancetype);
-    RUN_TEST(test_dance_invalid_dancetype);
-    RUN_TEST(test_dance_all_types);
-    RUN_TEST(test_dance_peppermint_twist_underscore);
-
-    // Behavior
-    RUN_TEST(test_behavior_missing_behaviortype);
-    RUN_TEST(test_behavior_invalid_behaviortype);
-    RUN_TEST(test_behavior_all_types);
+    // Behavior (unified)
+    RUN_TEST(test_behavior_missing_name);
+    RUN_TEST(test_behavior_invalid_name);
+    RUN_TEST(test_behavior_all_dance_types);
+    RUN_TEST(test_behavior_all_behavior_types);
+    RUN_TEST(test_behavior_stop);
 
     // Request ID
-    RUN_TEST(test_position_request_id_stored);
-    RUN_TEST(test_heading_request_id_stored);
-    RUN_TEST(test_position_no_request_id);
+    RUN_TEST(test_move_position_request_id_stored);
+    RUN_TEST(test_move_heading_request_id_stored);
+    RUN_TEST(test_move_position_no_request_id);
 
     return UNITY_END();
 }

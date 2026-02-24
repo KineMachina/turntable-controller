@@ -22,7 +22,6 @@ void setUp() {
     ctrl.commandQueue = &mockQueue;
     ctrl.mqttClient._setConnected(true);
     ctrl.mqttClient._clearPublishes();
-    ctrl.config.baseTopic = "test";
     ctrl.config.deviceId = "t1";
     ctrl.config.qosCommands = 1;
     ctrl.pendingMoveComplete = false;
@@ -96,11 +95,8 @@ void test_state_gearratio_above_threshold(void) {
 // ── Move-complete flag management ───────────────────────────────────────────
 
 void test_stopmove_clears_pending_move(void) {
-    // Start a position move
-    sendCommand(R"({"command":"position","position":90.0,"request_id":"r1"})");
+    sendCommand(R"({"command":"move","joint":"turntable","position":90.0,"request_id":"r1"})");
     TEST_ASSERT_TRUE(ctrl.pendingMoveComplete);
-
-    // Stop clears it
     ctrl.mqttClient._clearPublishes();
     sendCommand(R"({"command":"stopmove"})");
     TEST_ASSERT_FALSE(ctrl.pendingMoveComplete);
@@ -109,11 +105,8 @@ void test_stopmove_clears_pending_move(void) {
 }
 
 void test_forcestop_clears_pending_move(void) {
-    // Start a heading move
-    sendCommand(R"({"command":"heading","heading":180.0,"request_id":"r2"})");
+    sendCommand(R"({"command":"move","joint":"turntable","heading":180.0,"request_id":"r2"})");
     TEST_ASSERT_TRUE(ctrl.pendingMoveComplete);
-
-    // Force stop clears it
     ctrl.mqttClient._clearPublishes();
     sendCommand(R"({"command":"forcestop"})");
     TEST_ASSERT_FALSE(ctrl.pendingMoveComplete);
