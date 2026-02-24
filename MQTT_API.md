@@ -1,817 +1,281 @@
-# MQTT API Documentation
+# MQTT API Documentation (KRP v1.0)
 
 ## Overview
 
-The KineMachina Turntable Controller exposes an MQTT API for remote control and monitoring. The API uses a simplified 4-topic structure: one inbound command topic, two outbound data topics, and an online/offline LWT topic. All commands are sent as JSON to a single command topic with a `"command"` field that determines the action.
+The turntable controller implements the KineMachina Robot Protocol (KRP) v1.0 over MQTT. It publishes device discovery messages on connect and accepts commands via a single JSON-dispatch topic.
 
 ## Topic Structure
 
-All topics follow this pattern:
+All topics use a fixed `krp` prefix:
+
 ```
-{baseTopic}/{deviceId}/{topic}
+krp/{deviceId}/...
 ```
 
-**Default Configuration:**
-- Base Topic: `kinemachina/turntable`
-- Device ID: `turntable_001`
+**Default Device ID:** `turntable-001`
 
 | Topic | Direction | QoS | Retained | Purpose |
 |-------|-----------|-----|----------|---------|
-| `{baseTopic}/{deviceId}/command` | Inbound | 1 | No | All commands via JSON `"command"` field |
-| `{baseTopic}/{deviceId}/status` | Outbound | 0 | Yes | Consolidated device status |
-| `{baseTopic}/{deviceId}/response` | Outbound | 1 | No | Command acks, errors, move-complete |
-| `{baseTopic}/{deviceId}/status/online` | Outbound | 0 | Yes | LWT online/offline |
+| `krp/{deviceId}/$state` | Outbound | 1 | Yes | Device lifecycle (`online`, `ready`, `offline`) |
+| `krp/{deviceId}/$name` | Outbound | 1 | Yes | Human-readable name |
+| `krp/{deviceId}/$capabilities` | Outbound | 1 | Yes | JSON capability manifest |
+| `krp/{deviceId}/command` | Inbound | 1 | No | All commands via JSON `"command"` field |
+| `krp/{deviceId}/response` | Outbound | 1 | No | Command acks, errors, move-complete |
+| `krp/{deviceId}/status` | Outbound | 0 | Yes | Device status (change-triggered + 30s heartbeat) |
 
-## Configuration
+## Birth Sequence
 
-MQTT settings can be configured via the web UI or EEPROM. Default values:
+On MQTT connect, the device publishes three retained messages:
 
-- **Broker**: `mqtt.broker.local`
-- **Port**: `1883`
-- **Username**: (empty, optional)
-- **Password**: (empty, optional)
-- **Device ID**: `turntable_001`
-- **Base Topic**: `kinemachina/turntable`
-- **QoS Commands**: `1`
-- **QoS Status**: `0`
-- **Keepalive**: `60` seconds
-- **Enabled**: `false` (must be enabled via web UI)
+1. **`$state`** → `"online"` (plain string)
+2. **`$name`** → `"Turntable A"` (plain string, configurable via NVS)
+3. **`$capabilities`** → JSON manifest:
 
-## Commands
-
-All commands are published to a single topic: `{baseTopic}/{deviceId}/command`
-
-Payloads must be valid JSON with a `"command"` field that determines the action. Command names are **case-insensitive**.
-
-### Position Control
-
-#### Move to Position (Absolute)
-
-**Payload**:
 ```json
 {
-  "command": "position",
-  "position": 180.0,
-  "request_id": "optional-client-id"
-}
-```
-
-**Description**: Move to an absolute turntable position in degrees (0-360). When the move finishes, a second response is published to the response topic with `message: "Move complete"` and `event: "complete"` (see [Move-complete response](#move-complete-response)).
-
-**Parameters**:
-- `position` (float, required): Target position in degrees
-- `request_id` (string, optional): Client-supplied ID echoed in the move-complete response for correlation
-
-**Example**:
-```bash
-mosquitto_pub -h mqtt.broker.local -t "kinemachina/turntable/turntable_001/command" -m '{"command": "position", "position": 180.0}'
-```
-
-#### Move to Heading (Shortest Path)
-
-**Payload**:
-```json
-{
-  "command": "heading",
-  "heading": 180.0,
-  "request_id": "optional-client-id"
-}
-```
-
-**Description**: Move to a target heading using the shortest path. Computes shortest angle from current position. When the move finishes, a second response is published to the response topic with `message: "Move complete"` and `event: "complete"` (see [Move-complete response](#move-complete-response)).
-
-**Parameters**:
-- `heading` (float, required): Target heading in degrees (0-360)
-- `request_id` (string, optional): Client-supplied ID echoed in the move-complete response for correlation
-
-**Example**:
-```bash
-mosquitto_pub -h mqtt.broker.local -t "kinemachina/turntable/turntable_001/command" -m '{"command": "heading", "heading": 180.0}'
-```
-
-#### Zero Position
-
-**Payload**:
-```json
-{
-  "command": "zero"
-}
-```
-
-**Description**: Zero the stepper position (sets current position to 0).
-
-**Example**:
-```bash
-mosquitto_pub -h mqtt.broker.local -t "kinemachina/turntable/turntable_001/command" -m '{"command": "zero"}'
-```
-
-#### Home
-
-**Payload**:
-```json
-{
-  "command": "home"
-}
-```
-
-**Description**: Home the motor (move to position 0).
-
-**Example**:
-```bash
-mosquitto_pub -h mqtt.broker.local -t "kinemachina/turntable/turntable_001/command" -m '{"command": "home"}'
-```
-
-### Velocity Control
-
-#### Run Forward
-
-**Payload**:
-```json
-{
-  "command": "runForward"
-}
-```
-
-**Description**: Start continuous forward rotation at current speed setting.
-
-**Example**:
-```bash
-mosquitto_pub -h mqtt.broker.local -t "kinemachina/turntable/turntable_001/command" -m '{"command": "runForward"}'
-```
-
-#### Run Backward
-
-**Payload**:
-```json
-{
-  "command": "runBackward"
-}
-```
-
-**Description**: Start continuous backward rotation at current speed setting.
-
-**Example**:
-```bash
-mosquitto_pub -h mqtt.broker.local -t "kinemachina/turntable/turntable_001/command" -m '{"command": "runBackward"}'
-```
-
-#### Stop Move
-
-**Payload**:
-```json
-{
-  "command": "stop"
-}
-```
-
-**Description**: Stop current movement (decelerates to stop). The alias `"stopMove"` is also accepted.
-
-**Example**:
-```bash
-mosquitto_pub -h mqtt.broker.local -t "kinemachina/turntable/turntable_001/command" -m '{"command": "stop"}'
-```
-
-#### Force Stop
-
-**Payload**:
-```json
-{
-  "command": "forceStop"
-}
-```
-
-**Description**: Immediately stop all movement (emergency stop).
-
-**Example**:
-```bash
-mosquitto_pub -h mqtt.broker.local -t "kinemachina/turntable/turntable_001/command" -m '{"command": "forceStop"}'
-```
-
-### Motor Control
-
-#### Enable/Disable Motor
-
-**Payload**:
-```json
-{
-  "command": "enable",
-  "enable": true
-}
-```
-
-**Description**: Enable or disable the motor driver.
-
-**Parameters**:
-- `enable` (bool, required): `true` to enable, `false` to disable
-
-**Example**:
-```bash
-mosquitto_pub -h mqtt.broker.local -t "kinemachina/turntable/turntable_001/command" -m '{"command": "enable", "enable": true}'
-```
-
-#### Reset Engine
-
-**Payload**:
-```json
-{
-  "command": "reset"
-}
-```
-
-**Description**: Reset the FastAccelStepper engine. Use if motor control becomes unresponsive.
-
-**Example**:
-```bash
-mosquitto_pub -h mqtt.broker.local -t "kinemachina/turntable/turntable_001/command" -m '{"command": "reset"}'
-```
-
-### Configuration Commands
-
-#### Set Max Speed
-
-**Payload**:
-```json
-{
-  "command": "speed",
-  "speed": 2000.0
-}
-```
-
-**Description**: Set maximum speed for position moves.
-
-**Parameters**:
-- `speed` (float, required): Maximum speed in steps/second (must be > 0)
-
-**Example**:
-```bash
-mosquitto_pub -h mqtt.broker.local -t "kinemachina/turntable/turntable_001/command" -m '{"command": "speed", "speed": 2000.0}'
-```
-
-#### Set Acceleration
-
-**Payload**:
-```json
-{
-  "command": "acceleration",
-  "accel": 400.0
-}
-```
-
-**Description**: Set acceleration for position moves.
-
-**Parameters**:
-- `accel` (float, required): Acceleration in steps/second^2 (must be > 0)
-
-**Example**:
-```bash
-mosquitto_pub -h mqtt.broker.local -t "kinemachina/turntable/turntable_001/command" -m '{"command": "acceleration", "accel": 400.0}'
-```
-
-#### Set Microstepping
-
-**Payload**:
-```json
-{
-  "command": "microsteps",
-  "microsteps": 8
-}
-```
-
-**Description**: Set microstepping value for TMC2209 driver.
-
-**Parameters**:
-- `microsteps` (int, required): Microstepping value (must be power of 2: 1, 2, 4, 8, 16, 32, 64, 128, or 256)
-
-**Example**:
-```bash
-mosquitto_pub -h mqtt.broker.local -t "kinemachina/turntable/turntable_001/command" -m '{"command": "microsteps", "microsteps": 8}'
-```
-
-#### Set Gear Ratio
-
-**Payload**:
-```json
-{
-  "command": "gearRatio",
-  "ratio": 2.0
-}
-```
-
-**Description**: Set gear ratio (stepper rotations : turntable rotations).
-
-**Parameters**:
-- `ratio` (float, required): Gear ratio (must be between 0.1 and 100.0)
-
-**Example**:
-```bash
-mosquitto_pub -h mqtt.broker.local -t "kinemachina/turntable/turntable_001/command" -m '{"command": "gearRatio", "ratio": 2.0}'
-```
-
-#### Set Speed (Hz)
-
-**Payload**:
-```json
-{
-  "command": "speedHz",
-  "speedHz": 1000.0
-}
-```
-
-**Description**: Set speed for velocity mode (continuous rotation).
-
-**Parameters**:
-- `speedHz` (float, required): Speed in Hz (steps per second, must be >= 0)
-
-**Example**:
-```bash
-mosquitto_pub -h mqtt.broker.local -t "kinemachina/turntable/turntable_001/command" -m '{"command": "speedHz", "speedHz": 1000.0}'
-```
-
-### Dance Commands
-
-#### Start Dance
-
-**Payload**:
-```json
-{
-  "command": "dance",
-  "danceType": "twist"
-}
-```
-
-**Description**: Start a dance sequence. Dance runs in background task and can be stopped.
-
-**Parameters**:
-- `danceType` (string, required): Dance type (case-insensitive)
-  - `"twist"` - Chubby Checkers "Twist" - back and forth with increasing arcs
-  - `"shake"` - Quick shake - small rapid back and forth
-  - `"spin"` - Full rotations back and forth
-  - `"wiggle"` - Small wiggles in place
-  - `"watusi"` - Watusi - side-to-side alternating movements
-  - `"pepperminttwist"` or `"peppermint_twist"` - Rapid alternating twists
-
-**Example**:
-```bash
-mosquitto_pub -h mqtt.broker.local -t "kinemachina/turntable/turntable_001/command" -m '{"command": "dance", "danceType": "twist"}'
-```
-
-#### Stop Dance
-
-**Payload**:
-```json
-{
-  "command": "stopDance"
-}
-```
-
-**Description**: Stop the currently running dance sequence.
-
-**Example**:
-```bash
-mosquitto_pub -h mqtt.broker.local -t "kinemachina/turntable/turntable_001/command" -m '{"command": "stopDance"}'
-```
-
-### Behavior Commands
-
-#### Start Behavior
-
-**Payload**:
-```json
-{
-  "command": "behavior",
-  "behaviorType": "scanning"
-}
-```
-
-**Description**: Start a behavior sequence. Behavior runs in background task and can be stopped.
-
-**Parameters**:
-- `behaviorType` (string, required): Behavior type (case-insensitive)
-  - `"scanning"` - Scanning behavior
-  - `"sleeping"` - Sleeping behavior
-  - `"eating"` - Eating behavior
-  - `"alert"` - Alert behavior
-  - `"roaring"` - Roaring behavior
-  - `"stalking"` - Stalking behavior
-  - `"playing"` - Playing behavior
-  - `"resting"` - Resting behavior
-  - `"hunting"` - Hunting behavior
-  - `"victory"` - Victory behavior
-
-**Example**:
-```bash
-mosquitto_pub -h mqtt.broker.local -t "kinemachina/turntable/turntable_001/command" -m '{"command": "behavior", "behaviorType": "scanning"}'
-```
-
-#### Stop Behavior
-
-**Payload**:
-```json
-{
-  "command": "stopBehavior"
-}
-```
-
-**Description**: Stop the currently running behavior sequence.
-
-**Example**:
-```bash
-mosquitto_pub -h mqtt.broker.local -t "kinemachina/turntable/turntable_001/command" -m '{"command": "stopBehavior"}'
-```
-
-## Response Format
-
-All commands publish a response to: `{baseTopic}/{deviceId}/response`
-
-**Success Response** (immediate, when command is accepted):
-```json
-{
-  "status": "success",
-  "command": "position",
-  "executed": true,
-  "message": "Position command queued",
-  "timestamp": 1234567890
-}
-```
-
-**Error Response**:
-```json
-{
-  "status": "error",
-  "command": "position",
-  "executed": false,
-  "message": "Missing or invalid 'position' parameter",
-  "error": "Expected float",
-  "timestamp": 1234567890
-}
-```
-
-**Fields**:
-- `status` (string): `"success"` or `"error"`
-- `command` (string): Name of the command that was executed
-- `executed` (bool): `true` if command was executed successfully, `false` otherwise
-- `message` (string): Human-readable message
-- `error` (string, optional): Error details (only present on error)
-- `timestamp` (number): Timestamp in milliseconds since boot
-
-### Move-complete response
-
-For **heading** and **position** commands, the firmware publishes a **second** response on the same response topic when the move finishes (motor has stopped). Clients can wait for this message instead of polling HTTP to know when a move is done.
-
-**Move-complete response** (published when the move finishes):
-```json
-{
-  "status": "success",
-  "command": "heading",
-  "executed": true,
-  "message": "Move complete",
-  "event": "complete",
-  "timestamp": 1234567895,
-  "request_id": "optional-client-id"
-}
-```
-
-**Fields** (in addition to the standard response fields):
-- `message`: Always `"Move complete"` for this event
-- `event`: `"complete"` -- use this to distinguish "move started" from "move complete" without parsing the message string
-- `request_id` (string, optional): Echoed from the command payload if the client included it; use for correlating the completion with a specific command
-
-**Behavior**:
-- One move-complete response is published per move when the motor stops. If a new heading/position command is sent while a move is running, the pending completion is overwritten; the single move-complete published when the motor stops corresponds to the most recently started move.
-- If the move is stopped externally (**stop** or **forceStop**), no move-complete response is published (the pending flag is cleared).
-
-## Status Messages
-
-### Full Status
-
-**Topic**: `{baseTopic}/{deviceId}/status`
-
-**Published**: Automatically when state changes or periodically (every 30 seconds). Retained.
-
-**Payload**:
-```json
-{
-  "status": "success",
-  "timestamp": 1234567890,
-  "uptime_ms": 1234567890,
-  "free_heap": 245678,
-  "motor": {
-    "enabled": true,
-    "running": false,
-    "position": 1000,
-    "positionDegrees": 45.5,
-    "speedHz": 0.0,
-    "microsteps": 8,
-    "gearRatio": 2.0,
-    "behaviorInProgress": false,
-    "danceInProgress": false
-  },
-  "tmc2209": {
-    "rmsCurrent": 800.0,
-    "csActual": 16,
-    "actualCurrent": 750.0,
-    "irun": 16,
-    "ihold": 8,
-    "enabled": true,
-    "spreadCycle": false,
-    "pwmAutoscale": true,
-    "blankTime": 24
-  },
-  "wifi": {
-    "connected": true,
-    "ip": "192.168.1.100"
+  "device_id": "turntable-001",
+  "device_type": "turntable",
+  "name": "Turntable A",
+  "platform": "esp32s3",
+  "protocol_version": "1.0",
+  "capabilities": {
+    "motion": {
+      "joints": [
+        {"name": "turntable", "type": "stepper", "continuous": true, "home": 0}
+      ]
+    },
+    "behaviors": [
+      "scanning", "sleeping", "eating", "alert", "roaring",
+      "stalking", "playing", "resting", "hunting", "victory",
+      "twist", "shake", "spin", "wiggle", "watusi", "peppermint_twist"
+    ]
   }
 }
 ```
 
-**Motor Fields**:
-- `enabled` (bool): Motor driver enabled state
-- `running` (bool): Motor is currently moving
-- `position` (number): Stepper position in steps
-- `positionDegrees` (float): Stepper position in degrees
-- `speedHz` (float): Current target speed in Hz
-- `microsteps` (number): Current microstepping setting
-- `gearRatio` (float): Current gear ratio
-- `behaviorInProgress` (bool): Behavior sequence is running
-- `danceInProgress` (bool): Dance sequence is running
+After subscribing and publishing initial status, `$state` transitions to `"ready"`.
 
-**TMC2209 Fields**:
-- `rmsCurrent` (float): Configured RMS current in mA
-- `csActual` (int): Actual current scale value from driver
-- `actualCurrent` (float): Calculated actual current in mA
-- `irun` (int): Run current setting (0-31)
-- `ihold` (int): Hold current setting (0-31)
-- `enabled` (bool): Driver enabled state
-- `spreadCycle` (bool): SpreadCycle mode active (false = StealthChop)
-- `pwmAutoscale` (bool): PWM autoscale enabled
-- `blankTime` (int): Blank time setting
+**LWT (Last Will and Testament):** `$state` → `"offline"` on unexpected disconnect.
 
-**WiFi Fields**:
-- `connected` (bool): WiFi connection status
-- `ip` (string, if connected): IP address
+**Graceful shutdown:** `$state` → `"offline"` published before disconnect.
 
-### Online Status
+## Commands
 
-**Topic**: `{baseTopic}/{deviceId}/status/online`
+All commands are published to `krp/{deviceId}/command`. Payloads must be valid JSON with a `"command"` field. Command names are **case-insensitive**.
 
-**Published**:
-- `"online"` when MQTT connects (retained)
-- `"offline"` when MQTT disconnects (retained, via LWT)
+### KRP Standard Commands
 
-**Payload**: String `"online"` or `"offline"`
+#### move
+
+Move to a heading or position on a named joint.
+
+```json
+{"command": "move", "joint": "turntable", "heading": 180.0, "request_id": "req_001"}
+```
+
+```json
+{"command": "move", "joint": "turntable", "position": 90.0}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `joint` | string | Yes | Joint name (must be `"turntable"`) |
+| `heading` | float | One of heading/position/angle | Target heading (0-360, shortest path) |
+| `position` | float | One of heading/position/angle | Absolute position in degrees |
+| `angle` | float | One of heading/position/angle | Alias for `position` |
+| `request_id` | string | No | Echoed in response and move-complete |
+
+Unknown joints are silently ignored per KRP spec.
+
+```bash
+mosquitto_pub -h broker -t "krp/turntable-001/command" \
+  -m '{"command":"move","joint":"turntable","heading":180.0}'
+```
+
+#### home
+
+Return to position 0.
+
+```json
+{"command": "home"}
+```
+
+#### behavior
+
+Start or stop a behavior/dance sequence.
+
+**Start a behavior:**
+```json
+{"command": "behavior", "name": "scanning"}
+```
+
+**Start a dance:**
+```json
+{"command": "behavior", "name": "twist"}
+```
+
+**Stop current behavior/dance:**
+```json
+{"command": "behavior", "stop": true}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes (unless stop) | Behavior or dance name (case-insensitive) |
+| `stop` | bool | No | Set `true` to stop current behavior/dance |
+
+**Available behaviors:** scanning, sleeping, eating, alert, roaring, stalking, playing, resting, hunting, victory
+
+**Available dances:** twist, shake, spin, wiggle, watusi, peppermint_twist (or pepperminttwist)
+
+### Device-Specific Extensions
+
+| Command | Fields | Description |
+|---------|--------|-------------|
+| `enable` | `enable: true/false` | Enable/disable motor driver |
+| `speed` | `speed: 2000.0` | Max speed (steps/sec, > 0) |
+| `acceleration` | `accel: 400.0` | Acceleration (steps/sec^2, > 0) |
+| `speedHz` | `speedHz: 1000.0` | Speed for velocity mode (Hz, >= 0) |
+| `microsteps` | `microsteps: 16` | TMC2209 microstepping (power of 2: 1-256) |
+| `gearRatio` | `ratio: 2.0` | Gear ratio (0.1-100.0) |
+| `runForward` | (none) | Start continuous forward rotation |
+| `runBackward` | (none) | Start continuous backward rotation |
+| `stop` | (none) | Stop movement (decelerate). Alias: `stopMove` |
+| `forceStop` | (none) | Emergency stop (immediate) |
+| `reset` | (none) | Reset stepper engine |
+| `zero` | (none) | Set current position as 0 |
+
+### Legacy Aliases
+
+For backward compatibility, `heading` and `position` are accepted as top-level commands:
+
+```json
+{"command": "heading", "heading": 180.0}
+{"command": "position", "position": 90.0}
+```
+
+These bypass the `joint` field requirement and dispatch directly.
+
+## Response Format
+
+Published to `krp/{deviceId}/response` (not retained).
+
+**Success:**
+```json
+{"status": "ok", "command": "move", "timestamp": 12345}
+```
+
+**Success with request_id:**
+```json
+{"status": "ok", "command": "move", "request_id": "req_001", "timestamp": 12345}
+```
+
+**Error:**
+```json
+{"status": "error", "command": "move", "message": "Missing 'joint' field", "timestamp": 12345}
+```
+
+| Field | Type | Present | Description |
+|-------|------|---------|-------------|
+| `status` | string | Always | `"ok"` or `"error"` |
+| `command` | string | Always | Command that was processed |
+| `request_id` | string | When provided | Echoed from command payload |
+| `message` | string | Errors only | Error description |
+| `timestamp` | number | Always | `millis()` since boot |
+
+### Move-Complete Response
+
+For `move` (heading/position) commands, a second response is published when the motor finishes:
+
+```json
+{"status": "ok", "command": "heading", "event": "complete", "request_id": "req_001", "timestamp": 12350}
+```
+
+- `event: "complete"` distinguishes this from the initial ack
+- If a new move starts before completion, the pending completion is overwritten
+- `stop` or `forceStop` clears the pending completion (no event published)
+
+## Status Format
+
+Published to `krp/{deviceId}/status` (retained). Change-detection + 30-second heartbeat.
+
+```json
+{
+  "joints": {"turntable": 180.0},
+  "uptime_ms": 360000,
+  "timestamp": 360000
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `joints.turntable` | float | Current position in degrees |
+| `uptime_ms` | number | Milliseconds since boot |
+| `timestamp` | number | Same as uptime_ms (no RTC) |
+
+Detailed motor/TMC2209/WiFi diagnostics are available via the HTTP REST API only.
 
 ## Examples
 
-### Complete Workflow Example
+### CLI Workflow
 
 ```bash
-# 1. Check if device is online
-mosquitto_sub -h mqtt.broker.local -t "kinemachina/turntable/turntable_001/status/online"
+# Check device state
+mosquitto_sub -h broker -t "krp/turntable-001/$state"
 
-# 2. Subscribe to status updates
-mosquitto_sub -h mqtt.broker.local -t "kinemachina/turntable/turntable_001/status"
+# Subscribe to status and responses
+mosquitto_sub -h broker -t "krp/turntable-001/status" &
+mosquitto_sub -h broker -t "krp/turntable-001/response" &
 
-# 3. Subscribe to responses
-mosquitto_sub -h mqtt.broker.local -t "kinemachina/turntable/turntable_001/response"
+# Enable motor
+mosquitto_pub -h broker -t "krp/turntable-001/command" \
+  -m '{"command":"enable","enable":true}'
 
-# 4. Enable motor
-mosquitto_pub -h mqtt.broker.local -t "kinemachina/turntable/turntable_001/command" -m '{"command": "enable", "enable": true}'
+# Move to heading
+mosquitto_pub -h broker -t "krp/turntable-001/command" \
+  -m '{"command":"move","joint":"turntable","heading":180.0,"request_id":"r1"}'
 
-# 5. Set speed
-mosquitto_pub -h mqtt.broker.local -t "kinemachina/turntable/turntable_001/command" -m '{"command": "speed", "speed": 2000.0}'
+# Start a behavior
+mosquitto_pub -h broker -t "krp/turntable-001/command" \
+  -m '{"command":"behavior","name":"scanning"}'
 
-# 6. Move to 180 degrees
-mosquitto_pub -h mqtt.broker.local -t "kinemachina/turntable/turntable_001/command" -m '{"command": "position", "position": 180.0}'
+# Stop behavior
+mosquitto_pub -h broker -t "krp/turntable-001/command" \
+  -m '{"command":"behavior","stop":true}'
 
-# 7. Start a dance
-mosquitto_pub -h mqtt.broker.local -t "kinemachina/turntable/turntable_001/command" -m '{"command": "dance", "danceType": "twist"}'
-
-# 8. Stop the dance
-mosquitto_pub -h mqtt.broker.local -t "kinemachina/turntable/turntable_001/command" -m '{"command": "stopDance"}'
-
-# 9. Disable motor
-mosquitto_pub -h mqtt.broker.local -t "kinemachina/turntable/turntable_001/command" -m '{"command": "enable", "enable": false}'
+# Start a dance
+mosquitto_pub -h broker -t "krp/turntable-001/command" \
+  -m '{"command":"behavior","name":"twist"}'
 ```
 
 ### Python Example
 
 ```python
-import paho.mqtt.client as mqtt
-import json
+from kinemachina_core.clients.mqtt_motor import MqttMotorCommandSender
 
-BROKER = "mqtt.broker.local"
-BASE_TOPIC = "kinemachina/turntable"
-DEVICE_ID = "turntable_001"
-COMMAND_TOPIC = f"{BASE_TOPIC}/{DEVICE_ID}/command"
+motor = MqttMotorCommandSender(broker="rpi-5.local", device_id="turntable-001")
 
-def on_connect(client, userdata, flags, rc):
-    print(f"Connected with result code {rc}")
-    # Subscribe to responses and status
-    client.subscribe(f"{BASE_TOPIC}/{DEVICE_ID}/response")
-    client.subscribe(f"{BASE_TOPIC}/{DEVICE_ID}/status")
+# Move to heading (fire-and-forget)
+motor.move_to_heading(180.0)
 
-def on_message(client, userdata, msg):
-    payload = json.loads(msg.payload.decode())
-    print(f"Received on {msg.topic}: {payload}")
+# Move to heading and wait for completion
+result = motor.move_to_heading(90.0, wait_for_complete=True)
 
-client = mqtt.Client()
-client.on_connect = on_connect
-client.on_message = on_message
-client.connect(BROKER, 1883, 60)
-client.loop_start()
+# Start/stop behavior
+motor.start_behavior("scanning")
+motor.stop_behavior()
 
-# Enable motor
-client.publish(COMMAND_TOPIC, json.dumps({"command": "enable", "enable": True}))
-
-# Move to 180 degrees
-client.publish(COMMAND_TOPIC, json.dumps({"command": "position", "position": 180.0}))
-
-# Start dance
-client.publish(COMMAND_TOPIC, json.dumps({"command": "dance", "danceType": "twist"}))
-
-# Keep running
-client.loop_forever()
+# Start/stop dance
+motor.start_dance("twist")
+motor.stop_dance()
 ```
 
-### Python Example: Wait for Move Complete
+## Configuration
 
-To wait for a heading/position move to finish without polling HTTP, include a `request_id` and subscribe to the response topic; when you receive a response with `event == "complete"` and the same `request_id`, the move is done:
+MQTT settings are configured via the web UI or NVS (ESP32 Preferences):
 
-```python
-import paho.mqtt.client as mqtt
-import json
-import time
-import uuid
-
-BROKER = "mqtt.broker.local"
-BASE_TOPIC = "kinemachina/turntable"
-DEVICE_ID = "turntable_001"
-COMMAND_TOPIC = f"{BASE_TOPIC}/{DEVICE_ID}/command"
-
-move_complete = False
-request_id = str(uuid.uuid4())
-
-def on_message(client, userdata, msg):
-    global move_complete
-    payload = json.loads(msg.payload.decode())
-    if payload.get("event") == "complete" and payload.get("request_id") == request_id:
-        move_complete = True
-
-client = mqtt.Client()
-client.on_message = on_message
-client.connect(BROKER, 1883, 60)
-client.subscribe(f"{BASE_TOPIC}/{DEVICE_ID}/response")
-client.loop_start()
-
-client.publish(
-    COMMAND_TOPIC,
-    json.dumps({"command": "heading", "heading": 90.0, "request_id": request_id})
-)
-# Wait for move complete (in practice add a timeout)
-while not move_complete:
-    time.sleep(0.1)
-print("Move complete for request_id:", request_id)
-```
-
-### Node.js Example
-
-```javascript
-const mqtt = require('mqtt');
-
-const BROKER = 'mqtt://mqtt.broker.local';
-const BASE_TOPIC = 'kinemachina/turntable';
-const DEVICE_ID = 'turntable_001';
-const COMMAND_TOPIC = `${BASE_TOPIC}/${DEVICE_ID}/command`;
-
-const client = mqtt.connect(BROKER);
-
-client.on('connect', () => {
-  console.log('Connected to MQTT broker');
-
-  // Subscribe to responses and status
-  client.subscribe(`${BASE_TOPIC}/${DEVICE_ID}/response`);
-  client.subscribe(`${BASE_TOPIC}/${DEVICE_ID}/status`);
-
-  // Enable motor
-  client.publish(COMMAND_TOPIC, JSON.stringify({ command: 'enable', enable: true }));
-
-  // Move to 180 degrees
-  client.publish(COMMAND_TOPIC, JSON.stringify({ command: 'position', position: 180.0 }));
-
-  // Start dance
-  client.publish(COMMAND_TOPIC, JSON.stringify({ command: 'dance', danceType: 'twist' }));
-});
-
-client.on('message', (topic, message) => {
-  const payload = JSON.parse(message.toString());
-  console.log(`Received on ${topic}:`, payload);
-
-  // Check for move-complete events
-  if (payload.event === 'complete') {
-    console.log('Move complete:', payload.command, payload.request_id);
-  }
-});
-```
-
-## Error Handling
-
-### Common Errors
-
-1. **Invalid JSON**: Payload is not valid JSON
-   ```json
-   {
-     "status": "error",
-     "command": "unknown",
-     "executed": false,
-     "message": "Invalid JSON",
-     "error": "Unexpected token"
-   }
-   ```
-
-2. **Unknown Command**: The `"command"` field contains an unrecognized command
-   ```json
-   {
-     "status": "error",
-     "command": "invalidCommand",
-     "executed": false,
-     "message": "Unknown command: invalidCommand"
-   }
-   ```
-
-3. **Missing Parameter**: Required parameter is missing
-   ```json
-   {
-     "status": "error",
-     "command": "position",
-     "executed": false,
-     "message": "Missing or invalid 'position' parameter",
-     "error": "Expected float"
-   }
-   ```
-
-4. **Invalid Value**: Parameter value is out of range
-   ```json
-   {
-     "status": "error",
-     "command": "microsteps",
-     "executed": false,
-     "message": "Invalid microstepping value",
-     "error": "Must be 1, 2, 4, 8, 16, 32, 64, 128, or 256"
-   }
-   ```
-
-5. **Command Queue Full**: Too many commands queued
-   ```json
-   {
-     "status": "error",
-     "command": "position",
-     "executed": false,
-     "message": "Command queue full"
-   }
-   ```
-
-6. **Already Running**: Dance or behavior already in progress
-   ```json
-   {
-     "status": "error",
-     "command": "dance",
-     "executed": false,
-     "message": "Dance failed to start",
-     "error": "Dance already in progress or stepper unavailable"
-   }
-   ```
-
-## Best Practices
-
-1. **Always Subscribe to Response Topic**: Monitor `{baseTopic}/{deviceId}/response` to verify command execution
-2. **Subscribe to Status Topic**: Keep track of motor state via `{baseTopic}/{deviceId}/status`
-3. **Check Online Status**: Verify device is connected before sending commands by checking the retained message on `{baseTopic}/{deviceId}/status/online`
-4. **Handle Errors**: Check the `executed` field in responses
-5. **Use Appropriate QoS**:
-   - QoS 1 for commands (ensures delivery)
-   - QoS 0 for status (lower overhead, acceptable to miss updates)
-6. **Monitor Queue**: If you get "Command queue full" errors, reduce command frequency
-7. **Stop Before New Command**: Stop current movement before starting a new one if needed
-8. **Wait for Move Complete**: For heading/position commands, wait for the second response (`event: "complete"` or `message: "Move complete"`) instead of polling HTTP; include `request_id` in the command payload to correlate the completion with your command
-9. **Single Command Topic**: All commands go to the same topic -- the `"command"` field in the JSON payload determines the action
-
-## Topic Summary
-
-| Topic | Direction | QoS | Retained | Description |
-|-------|-----------|-----|----------|-------------|
-| `{baseTopic}/{deviceId}/command` | Publish | 1 | No | Send all commands to device |
-| `{baseTopic}/{deviceId}/response` | Subscribe | 1 | No | Command execution responses |
-| `{baseTopic}/{deviceId}/status` | Subscribe | 0 | Yes | Consolidated device status |
-| `{baseTopic}/{deviceId}/status/online` | Subscribe | 0 | Yes | Online/offline status (LWT) |
-
-## Configuration via Web UI
-
-MQTT settings can be configured via the web interface:
-1. Navigate to `http://{device-ip}/`
-2. Scroll to "MQTT Configuration" section
-3. Configure broker, port, credentials, topics, etc.
-4. Check "Enable MQTT" checkbox
-5. Click "Save MQTT Configuration"
-6. MQTT will automatically restart with new settings
-
-Settings are persisted to EEPROM and will be restored on reboot.
+- **Broker**: `mqtt.broker.local`
+- **Port**: `1883`
+- **Device ID**: `turntable-001`
+- **Device Name**: `Turntable A`
+- **Enabled**: `false` (must be enabled via web UI)
