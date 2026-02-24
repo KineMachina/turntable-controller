@@ -86,7 +86,7 @@ void MQTTController::publishBirthMessages()
     }
 
     // 1. $state → "online" (retained, QoS 1)
-    mqttClient.publish(stateTopic, 1, true, "online", 6);
+    mqttClient.publish(stateTopic, 1, true, "online", strlen("online"));
     Serial.printf("[MQTT] Published $state=online to %s (retained)\n", stateTopic);
 
     // 2. $name → config.deviceName (retained, QoS 1)
@@ -160,8 +160,9 @@ void MQTTController::publishStatus(bool force)
     JsonObject joints = doc["joints"].to<JsonObject>();
     joints["turntable"] = stepperController->getStepperPositionDegrees();
 
-    doc["uptime_ms"] = millis();
-    doc["timestamp"] = millis();
+    unsigned long now = millis();
+    doc["uptime_ms"] = now;
+    doc["timestamp"] = now;
 
     String statusStr;
     serializeJson(doc, statusStr);
@@ -408,12 +409,10 @@ void MQTTController::handleMove(const char* payload, size_t len)
         // If "angle" is present but "position" is not, copy angle to position for handlePosition
         if (!doc["position"].is<float>() && !doc["position"].is<int>())
         {
-            // Re-serialize with position field from angle
-            JsonDocument moveDoc;
-            deserializeJson(moveDoc, payload, len);
-            moveDoc["position"] = moveDoc["angle"].as<float>();
+            // Re-serialize with position field added to existing doc
+            doc["position"] = doc["angle"].as<float>();
             String moveStr;
-            serializeJson(moveDoc, moveStr);
+            serializeJson(doc, moveStr);
             handlePosition(moveStr.c_str(), moveStr.length());
         }
         else
@@ -605,7 +604,7 @@ void MQTTController::handlePosition(const char* payload, size_t len)
         return;
     }
 
-    if (!doc["position"].is<float>())
+    if (!doc["position"].is<float>() && !doc["position"].is<int>())
     {
         publishResponse("position", false, "Missing or invalid 'position' parameter");
         return;
@@ -1074,7 +1073,7 @@ void MQTTController::onMqttConnect(bool sessionPresent)
     instance->subscribeToCommands();
 
     // Transition to ready state
-    instance->mqttClient.publish(instance->stateTopic, 1, true, "ready", 5);
+    instance->mqttClient.publish(instance->stateTopic, 1, true, "ready", strlen("ready"));
     Serial.printf("[MQTT] Published $state=ready to %s (retained)\n", instance->stateTopic);
 
     // Publish initial status
@@ -1330,7 +1329,7 @@ bool MQTTController::begin(StepperMotorController* stepperCtrl, MotorCommandQueu
     }
 
     // Set LWT (Last Will and Testament) - KRP v1.0: $state → "offline"
-    mqttClient.setWill(stateTopic, 1, true, "offline", 7);
+    mqttClient.setWill(stateTopic, 1, true, "offline", strlen("offline"));
     Serial.printf("[MQTT] LWT configured: %s (QoS 1, retained)\n", stateTopic);
 
     // Connect to broker
@@ -1415,7 +1414,7 @@ void MQTTController::setConfig(const MQTTConfig& cfg)
             mqttClient.setCredentials(config.username, config.password);
         }
 
-        mqttClient.setWill(stateTopic, 1, true, "offline", 7);
+        mqttClient.setWill(stateTopic, 1, true, "offline", strlen("offline"));
         mqttClient.connect();
     }
 }
@@ -1455,7 +1454,7 @@ bool MQTTController::restart()
     {
         // Graceful KRP shutdown: publish offline before disconnect
         Serial.println("[MQTT] Publishing offline state (graceful shutdown)...");
-        mqttClient.publish(stateTopic, 1, true, "offline", 7);
+        mqttClient.publish(stateTopic, 1, true, "offline", strlen("offline"));
 
         Serial.println("[MQTT] Disconnecting existing connection...");
         mqttClient.disconnect();
@@ -1490,7 +1489,7 @@ bool MQTTController::restart()
         Serial.println("[MQTT] Authentication: None (anonymous)");
     }
 
-    mqttClient.setWill(stateTopic, 1, true, "offline", 7);
+    mqttClient.setWill(stateTopic, 1, true, "offline", strlen("offline"));
     Serial.printf("[MQTT] LWT configured: %s (QoS 1, retained)\n", stateTopic);
 
     // Connect
