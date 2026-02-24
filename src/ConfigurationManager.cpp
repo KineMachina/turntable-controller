@@ -1,5 +1,8 @@
 #include "ConfigurationManager.h"
 #include <string.h>
+#include "RuntimeLog.h"
+
+static const char* TAG = "Config";
 
 const char* ConfigurationManager::NVS_NAMESPACE = "motor_config";
 
@@ -109,14 +112,14 @@ bool ConfigurationManager::validateConfig(const SystemConfig& cfg) {
 
 bool ConfigurationManager::load() {
     if (!preferences.begin(NVS_NAMESPACE, true)) { // Read-only mode
-        Serial.println("[Config] Failed to open NVS namespace (read-only)");
+        ESP_LOGE(TAG, "Failed to open NVS namespace (read-only)");
         configLoaded = false;
         return false;
     }
     
     // Check if configuration exists
     if (!preferences.isKey("config_version")) {
-        Serial.println("[Config] No saved configuration found, using defaults");
+        ESP_LOGI(TAG, "No saved configuration found, using defaults");
         preferences.end();
         configLoaded = false;
         return false;
@@ -125,8 +128,8 @@ bool ConfigurationManager::load() {
     // Load configuration version
     uint8_t savedVersion = preferences.getUChar("config_version", 0);
     if (savedVersion != CONFIG_VERSION) {
-        Serial.printf("[Config] Version mismatch: saved=%d, current=%d. Using defaults.\n", 
-                     savedVersion, CONFIG_VERSION);
+        ESP_LOGW(TAG, "Version mismatch: saved=%d, current=%d. Using defaults.",
+                 savedVersion, CONFIG_VERSION);
         preferences.end();
         configLoaded = false;
         return false;
@@ -201,26 +204,26 @@ bool ConfigurationManager::load() {
     
     // Validate loaded configuration
     if (!validateConfig(config)) {
-        Serial.println("[Config] Loaded configuration failed validation, using defaults");
+        ESP_LOGW(TAG, "Loaded configuration failed validation, using defaults");
         setDefaults();
         configLoaded = false;
         return false;
     }
     
-    Serial.println("[Config] Configuration loaded successfully from NVS");
+    ESP_LOGI(TAG, "Configuration loaded successfully from NVS");
     configLoaded = true;
     return true;
 }
 
 bool ConfigurationManager::save() {
     if (!preferences.begin(NVS_NAMESPACE, false)) { // Read-write mode
-        Serial.println("[Config] Failed to open NVS namespace (read-write)");
+        ESP_LOGE(TAG, "Failed to open NVS namespace (read-write)");
         return false;
     }
     
     // Validate before saving
     if (!validateConfig(config)) {
-        Serial.println("[Config] Configuration validation failed, not saving");
+        ESP_LOGW(TAG, "Configuration validation failed, not saving");
         preferences.end();
         return false;
     }
@@ -260,7 +263,7 @@ bool ConfigurationManager::save() {
     
     preferences.end();
     
-    Serial.println("[Config] Configuration saved successfully to NVS");
+    ESP_LOGI(TAG, "Configuration saved successfully to NVS");
     configLoaded = true;
     return true;
 }

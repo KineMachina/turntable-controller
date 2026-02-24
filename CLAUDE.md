@@ -53,6 +53,29 @@ All three interfaces (HTTP, MQTT, Serial) enqueue commands into `MotorCommandQue
 - **MotorCommandQueue** - FreeRTOS queue wrapper for thread-safe motor commands
 - **SerialCommandQueue** - Serial command buffering and processing
 
+### Logging
+
+All diagnostic output uses `ESP_LOGx(TAG, format, ...)`. Never `Serial.print` for logging. The only exception: `Serial.print/println` in main.cpp for direct responses to serial commands (interactive terminal I/O).
+
+**Setup per file:**
+```cpp
+#include "RuntimeLog.h"
+static const char* TAG = "MyTag";
+```
+
+**IMPORTANT:** Always include `"RuntimeLog.h"`, NOT `<esp_log.h>`. Arduino-ESP32 redefines `ESP_LOGx` as direct `log_printf` calls with no runtime level check. `RuntimeLog.h` re-overrides them to check the global `runtimeLogLevel` variable, enabling the `log` serial command. The `USE_ESP_IDF_LOG` build flag would fix this properly but breaks third-party libraries that use `log_e()` without defining `TAG`.
+
+| Level | Macro | Use for |
+|-------|-------|---------|
+| ERROR | `ESP_LOGE` | Hardware failures, critical errors, init failures |
+| WARN | `ESP_LOGW` | Non-fatal issues, degraded operation, missing optional components |
+| INFO | `ESP_LOGI` | Normal events: startup, connections, commands, config changes |
+| DEBUG | `ESP_LOGD` | Periodic: heartbeat, reconnects, status publishing, loop restarts |
+
+**TAG registry:** Main, HTTP, MQTT, Stepper, Config, MotorQueue, SerialQueue, OLED
+
+**Runtime control:** `log` serial command sets `runtimeLogLevel`: `log off`, `log error`, `log warn`, `log info` (default), `log debug`.
+
 ### Key Hardware Details
 
 - **TMC2209**: UART single-wire bidirectional on PDN_UART (GPIO 17 TX, GPIO 18 RX). Supports StealthChop/SpreadCycle modes, microstepping 1-256

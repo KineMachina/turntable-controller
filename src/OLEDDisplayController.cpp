@@ -3,6 +3,9 @@
 #include "HTTPServerController.h"
 #include "MQTTController.h"
 #include "ConfigurationManager.h"
+#include "RuntimeLog.h"
+
+static const char* TAG = "OLED";
 
 OLEDDisplayController::OLEDDisplayController()
     : display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1),
@@ -27,7 +30,7 @@ bool OLEDDisplayController::begin(StepperMotorController* stepperCtrl,
     Wire.begin(SDA_PIN, SCL_PIN);
 
     if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS)) {
-        Serial.println("ERROR: SSD1306 OLED init failed");
+        ESP_LOGE(TAG, "SSD1306 OLED init failed");
         return false;
     }
 
@@ -39,7 +42,7 @@ bool OLEDDisplayController::begin(StepperMotorController* stepperCtrl,
     display.display();
 
     initialized = true;
-    Serial.println("OLED display initialized");
+    ESP_LOGI(TAG, "OLED display initialized");
     return true;
 }
 

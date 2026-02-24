@@ -1,4 +1,7 @@
 #include "MotorCommandQueue.h"
+#include "RuntimeLog.h"
+
+static const char* TAG = "MotorQueue";
 
 MotorCommandQueue::MotorCommandQueue() : commandQueue(nullptr) {
 }
@@ -17,25 +20,23 @@ bool MotorCommandQueue::begin() {
     
     commandQueue = xQueueCreate(QUEUE_SIZE, sizeof(MotorCommand));
     if (commandQueue == nullptr) {
-        Serial.println("[MotorCommandQueue] ERROR: Failed to create queue");
+        ESP_LOGE(TAG, "Failed to create queue");
         return false;
     }
     
-    Serial.println("[MotorCommandQueue] Queue created successfully");
+    ESP_LOGI(TAG, "Queue created successfully");
     return true;
 }
 
 bool MotorCommandQueue::sendCommand(const MotorCommand& cmd, TickType_t timeoutMs) {
     if (commandQueue == nullptr) {
-        Serial.println("[MotorCommandQueue] ERROR: Queue not initialized");
+        ESP_LOGE(TAG, "Queue not initialized");
         return false;
     }
     
     BaseType_t result = xQueueSend(commandQueue, &cmd, timeoutMs);
     if (result != pdTRUE) {
-        Serial.print("[MotorCommandQueue] WARNING: Failed to send command (type=");
-        Serial.print((int)cmd.type);
-        Serial.println(") - queue may be full");
+        ESP_LOGW(TAG, "Failed to send command (type=%d) - queue may be full", (int)cmd.type);
         return false;
     }
     

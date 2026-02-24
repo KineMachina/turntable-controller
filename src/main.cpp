@@ -9,6 +9,12 @@
 #include <FreeRTOS.h>
 #include <task.h>
 #include <string.h>
+#include "RuntimeLog.h"
+
+static const char* TAG = "Main";
+
+// Runtime log level — checked by ESP_LOGx macros via RuntimeLog.h
+esp_log_level_t runtimeLogLevel = ESP_LOG_INFO;
 
 // Stepper motor pins (adjust to your wiring)
 #define STEP_PIN 5
@@ -72,52 +78,50 @@ void setup()
     // Note: Task watchdog timeout is configured via build flag CONFIG_ESP_TASK_WDT_TIMEOUT_S=120
     // in platformio.ini. This gives HTTP handlers and dance sequences more time to complete.
 
-    Serial.println("\n\n=== ESP32-S3 Stepper Motor Controller ===");
-    Serial.println("TMC2209 Stepper Motor Controller");
-    Serial.println();
+    ESP_LOGI(TAG, "=== ESP32-S3 Stepper Motor Controller ===");
+    ESP_LOGI(TAG, "TMC2209 Stepper Motor Controller");
 
     // Load configuration from NVS
-    Serial.println("Loading configuration from NVS...");
+    ESP_LOGI(TAG, "Loading configuration from NVS...");
     bool configLoaded = configManager.load();
     if (configLoaded) {
-        Serial.println("  Configuration loaded successfully");
+        ESP_LOGI(TAG, "Configuration loaded successfully");
     } else {
-        Serial.println("  Using default configuration (no saved config found)");
+        ESP_LOGI(TAG, "Using default configuration (no saved config found)");
     }
     const SystemConfig& config = configManager.getConfig();
 
-    Serial.println("\nInitializing Stepper Motor Controller...");
+    ESP_LOGI(TAG, "Initializing Stepper Motor Controller...");
     if (!stepperController.begin(&config))
     {
-        Serial.println("Stepper motor initialization failed. Continuing without stepper.");
+        ESP_LOGE(TAG, "Stepper motor initialization failed. Continuing without stepper.");
     }
 
     // Enable debug logging for stepper
     stepperController.setDebugLogging(true);
-    Serial.println("Stepper and PID debug logging enabled");
+    ESP_LOGI(TAG, "Stepper and PID debug logging enabled");
 
     // Initialize command queue
     if (!motorCommandQueue.begin())
     {
-        Serial.println("ERROR: Failed to initialize motor command queue");
+        ESP_LOGE(TAG, "Failed to initialize motor command queue");
     }
     else
     {
-        Serial.println("Motor command queue initialized");
+        ESP_LOGI(TAG, "Motor command queue initialized");
     }
 
     // Initialize HTTP Server (includes WiFi) - use config values
     httpServer = new HTTPServerController(config.wifiSSID, config.wifiPassword, HTTP_PORT);
     if (httpServer->begin(&stepperController, &motorCommandQueue, &configManager, &mqttController))
     {
-        Serial.print("Web interface available at: http://");
-        Serial.println(httpServer->getIPAddress());
+        ESP_LOGI(TAG, "Web interface available at: http://%s", httpServer->getIPAddress().c_str());
         httpServer->printEndpoints();
     }
     else
     {
-        Serial.println("HTTP server initialization failed - continuing without network control");
-        Serial.println("Serial commands still available");
+        ESP_LOGW(TAG, "HTTP server initialization failed - continuing without network control");
+        ESP_LOGI(TAG, "Serial commands still available");
     }
 
     // Initialize MQTT Controller (requires WiFi) - use config values
@@ -138,30 +142,30 @@ void setup()
         
         if (mqttController.begin(&stepperController, &motorCommandQueue, &mqttConfig, &configManager))
         {
-            Serial.println("MQTT controller initialized");
+            ESP_LOGI(TAG, "MQTT controller initialized");
         }
         else
         {
-            Serial.println("MQTT controller initialization failed or disabled - continuing without MQTT");
+            ESP_LOGW(TAG, "MQTT controller initialization failed or disabled - continuing without MQTT");
         }
     }
     else
     {
-        Serial.println("MQTT controller skipped - WiFi not connected");
+        ESP_LOGW(TAG, "MQTT controller skipped - WiFi not connected");
     }
 
     // Initialize OLED display
     if (oledDisplay.begin(&stepperController, httpServer, &mqttController, &configManager))
     {
-        Serial.println("OLED display initialized");
+        ESP_LOGI(TAG, "OLED display initialized");
     }
     else
     {
-        Serial.println("OLED display initialization failed - continuing without display");
+        ESP_LOGW(TAG, "OLED display initialization failed - continuing without display");
     }
 
     // Create FreeRTOS tasks
-    Serial.println("\nCreating FreeRTOS tasks...");
+    ESP_LOGI(TAG, "Creating FreeRTOS tasks...");
 
     // Motor Control Task - High priority for real-time control
     xTaskCreatePinnedToCore(
@@ -173,7 +177,7 @@ void setup()
         &motorControlTaskHandle,       // Task handle
         1                              // Core 1 (dedicated to motor control)
     );
-    Serial.println("  Motor control task created on Core 1");
+    ESP_LOGI(TAG, "Motor control task created on Core 1");
 
     // HTTP Server Task - Medium priority
     xTaskCreatePinnedToCore(
@@ -185,16 +189,16 @@ void setup()
         &httpServerTaskHandle,       // Task handle
         0                            // Core 0
     );
-    Serial.println("  HTTP server task created on Core 0");
+    ESP_LOGI(TAG, "HTTP server task created on Core 0");
 
     // Initialize serial command queue
     if (!serialCommandQueue.begin())
     {
-        Serial.println("ERROR: Failed to initialize serial command queue");
+        ESP_LOGE(TAG, "Failed to initialize serial command queue");
     }
     else
     {
-        Serial.println("Serial command queue initialized");
+        ESP_LOGI(TAG, "Serial command queue initialized");
     }
 
     // Serial Read Task - Medium priority (reads from Serial and queues commands)
@@ -207,7 +211,7 @@ void setup()
         &serialReadTaskHandle,       // Task handle
         0                            // Core 0
     );
-    Serial.println("  Serial read task created on Core 0");
+    ESP_LOGI(TAG, "Serial read task created on Core 0");
 
     // Serial Command Task - Low priority (processes queued commands)
     xTaskCreatePinnedToCore(
@@ -219,7 +223,7 @@ void setup()
         &serialCommandTaskHandle,       // Task handle
         0                               // Core 0
     );
-    Serial.println("  Serial command task created on Core 0");
+    ESP_LOGI(TAG, "Serial command task created on Core 0");
 
     // OLED Display Task - Low priority
     xTaskCreatePinnedToCore(
@@ -231,18 +235,18 @@ void setup()
         &oledDisplayTaskHandle,       // Task handle
         0                             // Core 0
     );
-    Serial.println("  OLED display task created on Core 0");
-
-    Serial.println("All tasks created successfully");
+    ESP_LOGI(TAG, "OLED display task created on Core 0");
+    ESP_LOGI(TAG, "All tasks created successfully");
 
     Serial.println("\nSerial Commands:");
-                Serial.println("  status           - Show current status (basic, no TMC)");
-                Serial.println("  statusfull        - Show full status including TMC2209");
-                Serial.println("  zero             - Zero stepper position");
-                if (httpServer != nullptr && httpServer->isConnected())
-                {
-                    httpServer->printEndpoints();
-                }
+    Serial.println("  status           - Show current status (basic, no TMC)");
+    Serial.println("  statusfull       - Show full status including TMC2209");
+    Serial.println("  zero             - Zero stepper position");
+    Serial.println("  log [off|error|warn|info|debug] - Set log level");
+    if (httpServer != nullptr && httpServer->isConnected())
+    {
+        httpServer->printEndpoints();
+    }
     Serial.println();
 }
 
@@ -255,7 +259,7 @@ void setup()
  */
 void motorControlTask(void *parameter)
 {
-    Serial.println("[MotorControlTask] Started on Core 1");
+    ESP_LOGI(TAG, "MotorControlTask started on Core 1");
 
     const TickType_t updateInterval = pdMS_TO_TICKS(10); // 10ms = 100Hz update rate
     TickType_t lastWakeTime = xTaskGetTickCount();
@@ -280,7 +284,7 @@ void motorControlTask(void *parameter)
  */
 void httpServerTask(void *parameter)
 {
-    Serial.println("[HTTPServerTask] Started on Core 0");
+    ESP_LOGI(TAG, "HTTPServerTask started on Core 0");
 
     const TickType_t updateInterval = pdMS_TO_TICKS(10); // 10ms update interval
 
@@ -299,7 +303,7 @@ void httpServerTask(void *parameter)
  */
 void serialReadTask(void *parameter)
 {
-    Serial.println("[SerialReadTask] Started on Core 0");
+    ESP_LOGI(TAG, "SerialReadTask started on Core 0");
 
     const TickType_t readInterval = pdMS_TO_TICKS(50); // Check every 50ms
     char cmdBuffer[SerialCommandQueue::MAX_CMD_LENGTH];
@@ -363,7 +367,7 @@ void serialReadTask(void *parameter)
  */
 void serialCommandTask(void *parameter)
 {
-    Serial.println("[SerialCommandTask] Started on Core 0");
+    ESP_LOGI(TAG, "SerialCommandTask started on Core 0");
 
     const TickType_t heartbeatInterval = pdMS_TO_TICKS(10000); // 10 seconds
     TickType_t lastHeartbeat = xTaskGetTickCount();
@@ -527,64 +531,67 @@ void serialCommandTask(void *parameter)
                 
                 Serial.println("========================================");
             }
+            // --- Logging level control ---
+            else if (strcmp(cmdBuffer, "log off") == 0 || strcmp(cmdBuffer, "log none") == 0)
+            {
+                runtimeLogLevel = ESP_LOG_NONE;
+                Serial.println("Logging disabled.");
+            }
+            else if (strcmp(cmdBuffer, "log error") == 0)
+            {
+                runtimeLogLevel = ESP_LOG_ERROR;
+                Serial.println("Log level: ERROR");
+            }
+            else if (strcmp(cmdBuffer, "log warn") == 0)
+            {
+                runtimeLogLevel = ESP_LOG_WARN;
+                Serial.println("Log level: WARN");
+            }
+            else if (strcmp(cmdBuffer, "log info") == 0 || strcmp(cmdBuffer, "log on") == 0)
+            {
+                runtimeLogLevel = ESP_LOG_INFO;
+                Serial.println("Log level: INFO");
+            }
+            else if (strcmp(cmdBuffer, "log debug") == 0)
+            {
+                runtimeLogLevel = ESP_LOG_DEBUG;
+                Serial.println("Log level: DEBUG");
+            }
+            else if (strcmp(cmdBuffer, "log") == 0)
+            {
+                const char* levelStr = "UNKNOWN";
+                switch (runtimeLogLevel) {
+                    case ESP_LOG_NONE:    levelStr = "OFF"; break;
+                    case ESP_LOG_ERROR:   levelStr = "ERROR"; break;
+                    case ESP_LOG_WARN:    levelStr = "WARN"; break;
+                    case ESP_LOG_INFO:    levelStr = "INFO"; break;
+                    case ESP_LOG_DEBUG:   levelStr = "DEBUG"; break;
+                    case ESP_LOG_VERBOSE: levelStr = "VERBOSE"; break;
+                }
+                Serial.printf("Log level: %s\n", levelStr);
+            }
             else
             {
                 Serial.println("Unknown command. Available commands:");
                 Serial.println("  status           - Show status (basic, no TMC)");
                 Serial.println("  statusfull       - Show full status including TMC2209");
                 Serial.println("  zero             - Zero stepper position");
+                Serial.println("  log [off|error|warn|info|debug] - Set log level");
             }
         }
 
-        // Heartbeat status every 5 seconds (when queue is empty)
+        // Heartbeat status every 10 seconds (when queue is empty)
         TickType_t currentTick = xTaskGetTickCount();
         if ((currentTick - lastHeartbeat) >= heartbeatInterval)
         {
-            Serial.println("[Status] ========================================");
-            
-            // System Information
-            Serial.printf("  Free Heap: %u bytes\n", ESP.getFreeHeap());
-            Serial.printf("  Uptime: %lu ms\n", millis());
-            
-            // WiFi Information
-            if (httpServer != nullptr && httpServer->isConnected())
-            {
-                Serial.println("  WiFi: Connected");
-                Serial.printf("    SSID: %s\n", WiFi.SSID().c_str());
-                vTaskDelay(pdMS_TO_TICKS(5)); // Yield to other tasks
-                Serial.printf("    IP Address: %s\n", httpServer->getIPAddress().c_str());
-                vTaskDelay(pdMS_TO_TICKS(5));
-                Serial.printf("    Gateway: %s\n", WiFi.gatewayIP().toString().c_str());
-                vTaskDelay(pdMS_TO_TICKS(5));
-                Serial.printf("    Subnet: %s\n", WiFi.subnetMask().toString().c_str());
-                vTaskDelay(pdMS_TO_TICKS(5));
-                Serial.printf("    DNS: %s\n", WiFi.dnsIP().toString().c_str());
-                vTaskDelay(pdMS_TO_TICKS(5));
-                Serial.printf("    RSSI: %d dBm\n", WiFi.RSSI());
-                vTaskDelay(pdMS_TO_TICKS(5));
-                Serial.printf("    MAC: %s\n", WiFi.macAddress().c_str());
-                vTaskDelay(pdMS_TO_TICKS(5));
-            }
-            else
-            {
-                Serial.println("  WiFi: Disconnected");
-            }
-            
-            // Stepper Motor Status
-            Serial.printf("  Stepper Position: %ld steps\n", stepperController.getStepperPosition());
-            Serial.printf("  Enabled: %s\n", stepperController.isEnabled() ? "Yes" : "No");
-            Serial.printf("  Running: %s\n", stepperController.isRunning() ? "Yes" : "No");
-            Serial.printf("  Microsteps: %u\n", stepperController.getMicrosteps());
-            Serial.printf("  Gear Ratio: %.2f:1 (stepper:turntable)\n", stepperController.getGearRatio());
-
-            // Dance Status
-            Serial.printf("  Dance In Progress: %s\n", stepperController.isDanceInProgress() ? "Yes" : "No");
-            
-            // Queue Status
-            Serial.printf("  Motor Queue: %u pending\n", motorCommandQueue.getCount());
-            Serial.printf("  Serial Queue: %u pending\n", serialCommandQueue.getCount());
-            
-            Serial.println("[Status] ========================================");
+            ESP_LOGD(TAG, "Heap: %u bytes | Uptime: %lu ms | Stepper pos: %ld | Enabled: %s | Running: %s | Dance: %s | Motor queue: %u | Serial queue: %u",
+                ESP.getFreeHeap(), millis(),
+                stepperController.getStepperPosition(),
+                stepperController.isEnabled() ? "Yes" : "No",
+                stepperController.isRunning() ? "Yes" : "No",
+                stepperController.isDanceInProgress() ? "Yes" : "No",
+                motorCommandQueue.getCount(),
+                serialCommandQueue.getCount());
 
             lastHeartbeat = currentTick;
         }
@@ -598,7 +605,7 @@ void serialCommandTask(void *parameter)
  */
 void oledDisplayTask(void *parameter)
 {
-    Serial.println("[OLEDDisplayTask] Started on Core 0");
+    ESP_LOGI(TAG, "OLEDDisplayTask started on Core 0");
 
     const TickType_t updateInterval = pdMS_TO_TICKS(500);
 

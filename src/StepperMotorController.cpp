@@ -1,6 +1,9 @@
 #include "StepperMotorController.h"
 #include "ConfigurationManager.h"
 #include <HardwareSerial.h>
+#include "RuntimeLog.h"
+
+static const char* TAG = "Stepper";
 
 // TMC2209 defaults when no config is provided
 static const uint8_t TMC_DEFAULT_TOFF = 5;
@@ -42,7 +45,7 @@ StepperMotorController::~StepperMotorController() {
 }
 
 bool StepperMotorController::begin(const SystemConfig* config) {
-    Serial.println("Initializing Stepper Motor Controller...");
+    ESP_LOGI(TAG, "Initializing Stepper Motor Controller...");
 
     if (config != nullptr) {
         maxSpeed = config->motorMaxSpeed;
@@ -61,7 +64,7 @@ bool StepperMotorController::begin(const SystemConfig* config) {
 
     // Initialize TMC2209 if present (UART, driver, defaults/config)
     if (tmcDriver != nullptr && tmcSerial != nullptr) {
-        Serial.println("Initializing TMC2209 via UART...");
+        ESP_LOGI(TAG, "Initializing TMC2209 via UART...");
         tmcSerial->begin(115200, SERIAL_8N1, tmcUartRx, tmcUartTx);
         delay(100);
 
@@ -87,15 +90,9 @@ bool StepperMotorController::begin(const SystemConfig* config) {
         }
         tmcDriver->push();
 
-        Serial.print("  TMC2209 initialized. Current set to: ");
-        Serial.print(tmcDriver->rms_current());
-        Serial.print(" mA");
-        Serial.print(" | CS_ACTUAL: ");
-        Serial.print(tmcDriver->cs_actual());
-        Serial.print(" (");
         float actualCurrent = (tmcDriver->cs_actual() / 32.0f) * tmcDriver->rms_current();
-        Serial.print(actualCurrent, 0);
-        Serial.println(" mA)");
+        ESP_LOGI(TAG, "TMC2209 initialized. Current set to: %u mA | CS_ACTUAL: %u (%.0f mA)",
+                 tmcDriver->rms_current(), tmcDriver->cs_actual(), actualCurrent);
     }
 
     // Initialize FastAccelStepperEngine (static instance)
@@ -104,7 +101,7 @@ bool StepperMotorController::begin(const SystemConfig* config) {
 
     stepper = stepperEngine->stepperConnectToPin(stepPin);
     if (stepper == nullptr) {
-        Serial.println("ERROR: Failed to create FastAccelStepper instance");
+        ESP_LOGE(TAG, "Failed to create FastAccelStepper instance");
         return false;
     }
 
@@ -116,25 +113,17 @@ bool StepperMotorController::begin(const SystemConfig* config) {
     if (tmcDriver != nullptr) {
         tmcDriver->microsteps(microsteps);
         uint16_t actualMicrosteps = tmcDriver->microsteps();
-        Serial.print("  Microstepping set to: ");
-        Serial.print(microsteps);
-        Serial.print(" (read back: ");
-        Serial.print(actualMicrosteps);
         if (actualMicrosteps != microsteps) {
-            Serial.print(" WARNING: mismatch");
+            ESP_LOGW(TAG, "Microstepping set to: %u (read back: %u WARNING: mismatch, %.2f deg per microstep)",
+                     microsteps, actualMicrosteps, 360.0f / (200.0f * microsteps));
+        } else {
+            ESP_LOGI(TAG, "Microstepping set to: %u (read back: %u, %.2f deg per microstep)",
+                     microsteps, actualMicrosteps, 360.0f / (200.0f * microsteps));
         }
-        Serial.print(", ");
-        Serial.print(360.0f / (200.0f * microsteps), 2);
-        Serial.println("° per microstep)");
     }
 
-    Serial.println("Stepper motor initialized.");
-    Serial.print("  Max Speed: ");
-    Serial.print(maxSpeed);
-    Serial.println(" steps/sec");
-    Serial.print("  Acceleration: ");
-    Serial.print(acceleration);
-    Serial.println(" steps/sec^2");
+    ESP_LOGI(TAG, "Stepper motor initialized. Max Speed: %.0f steps/sec, Acceleration: %.0f steps/sec^2",
+             maxSpeed, acceleration);
 
     return true;
 }
@@ -159,7 +148,7 @@ float StepperMotorController::getStepperPositionDegrees() const {
 
 void StepperMotorController::moveTo(long position) {
     if (stepper != nullptr) {
-        Serial.printf("calling moveTo(%ld)\n", position);
+        ESP_LOGD(TAG, "calling moveTo(%ld)", position);
         stepper->moveTo(position);
     }
 }
@@ -228,10 +217,7 @@ bool StepperMotorController::setMicrosteps(uint8_t microsteps) {
         // Read back to verify
         uint16_t actualMicrosteps = tmcDriver->microsteps();
         if (actualMicrosteps != microsteps) {
-            Serial.print("[Stepper] WARNING: Microstepping mismatch! Set ");
-            Serial.print(microsteps);
-            Serial.print(" but TMC2209 reports ");
-            Serial.println(actualMicrosteps);
+            ESP_LOGW(TAG, "Microstepping mismatch! Set %u but TMC2209 reports %u", microsteps, actualMicrosteps);
         }
     }
     
@@ -274,16 +260,8 @@ void StepperMotorController::moveToDegrees(float degrees) {
     // Convert stepper degrees to steps
     long steps = degreesToSteps(stepperDegrees);
     
-    Serial.print("[Stepper] moveToDegrees: turntableDegrees=");
-    Serial.print(degrees, 2);
-    Serial.print(", gearRatio=");
-    Serial.print(gearRatio, 2);
-    Serial.print(", stepperDegrees=");
-    Serial.print(stepperDegrees, 2);
-    Serial.print(", microsteps=");
-    Serial.print(microsteps);
-    Serial.print(", steps=");
-    Serial.println(steps);
+    ESP_LOGD(TAG, "moveToDegrees: turntableDegrees=%.2f, gearRatio=%.2f, stepperDegrees=%.2f, microsteps=%u, steps=%ld",
+             degrees, gearRatio, stepperDegrees, microsteps, steps);
      
     // Move to target position
     moveTo(steps);
@@ -323,13 +301,8 @@ bool StepperMotorController::moveToHeadingDegrees(float targetHeading) {
         delta += 360.0f;
     }
 
-    Serial.print("[Stepper] moveToHeadingDegrees: currentHeading=");
-    Serial.print(currentHeading, 2);
-    Serial.print("deg, targetHeading=");
-    Serial.print(targetHeading, 2);
-    Serial.print("deg, delta=");
-    Serial.print(delta, 2);
-    Serial.println("deg");
+    ESP_LOGD(TAG, "moveToHeadingDegrees: currentHeading=%.2fdeg, targetHeading=%.2fdeg, delta=%.2fdeg",
+             currentHeading, targetHeading, delta);
 
     // Convert relative degrees to stepper degrees (multiply by gear ratio)
     float stepperDegrees = delta * gearRatio;
@@ -339,12 +312,8 @@ bool StepperMotorController::moveToHeadingDegrees(float targetHeading) {
     // Compute absolute target position in steps
     long targetSteps = currentSteps + deltaSteps;
 
-    Serial.print("[Stepper] moveToHeadingDegrees: stepperDegrees=");
-    Serial.print(stepperDegrees, 2);
-    Serial.print(", deltaSteps=");
-    Serial.print(deltaSteps);
-    Serial.print(", targetSteps=");
-    Serial.println(targetSteps);
+    ESP_LOGD(TAG, "moveToHeadingDegrees: stepperDegrees=%.2f, deltaSteps=%ld, targetSteps=%ld",
+             stepperDegrees, deltaSteps, targetSteps);
 
     // Use absolute moveTo so the target is correct even if called mid-move.
     // move() would add steps relative to the current actual position, but our
@@ -364,12 +333,8 @@ void StepperMotorController::moveDegrees(float relativeDegrees) {
     // Convert stepper degrees to steps
     long steps = degreesToSteps(stepperDegrees);
     
-    Serial.print("[Stepper] moveDegrees: relativeDegrees=");
-    Serial.print(relativeDegrees, 2);
-    Serial.print(", stepperDegrees=");
-    Serial.print(stepperDegrees, 2);
-    Serial.print(", steps=");
-    Serial.println(steps);
+    ESP_LOGD(TAG, "moveDegrees: relativeDegrees=%.2f, stepperDegrees=%.2f, steps=%ld",
+             relativeDegrees, stepperDegrees, steps);
     
     // Use relative movement (move) instead of absolute (moveTo)
     stepper->move(steps);
@@ -391,46 +356,38 @@ void StepperMotorController::processCommandQueue(MotorCommandQueue* cmdQueue) {
                 cmdName = "MOVE_TO";
                 // Move to target position in degrees (converts to steps internally)
                 moveToDegrees(cmd.data.position.value);
-                Serial.print("[Stepper] Command: MOVE_TO -> ");
-                Serial.print(cmd.data.position.value, 2);
-                Serial.println("°");
+                ESP_LOGI(TAG, "Command: MOVE_TO -> %.2f deg", cmd.data.position.value);
                 break;
             }
            
             case MotorCommandType::ENABLE:
                 cmdName = "ENABLE";
                 enable(cmd.data.enable.enable);
-                Serial.print("[Stepper] Command: ENABLE -> ");
-                Serial.println(cmd.data.enable.enable ? "ON" : "OFF");
+                ESP_LOGI(TAG, "Command: ENABLE -> %s", cmd.data.enable.enable ? "ON" : "OFF");
                 break;
                 
             case MotorCommandType::SET_SPEED:
                 cmdName = "SET_SPEED";
                 setMaxSpeed(cmd.data.speed.speed);
-                Serial.print("[Stepper] Command: SET_SPEED -> ");
-                Serial.print(cmd.data.speed.speed, 1);
-                Serial.println(" steps/sec");
+                ESP_LOGI(TAG, "Command: SET_SPEED -> %.1f steps/sec", cmd.data.speed.speed);
                 break;
                 
             case MotorCommandType::SET_ACCELERATION:
                 cmdName = "SET_ACCELERATION";
                 setAcceleration(cmd.data.acceleration.accel);
-                Serial.print("[Stepper] Command: SET_ACCELERATION -> ");
-                Serial.print(cmd.data.acceleration.accel, 1);
-                Serial.println(" steps/sec²");
+                ESP_LOGI(TAG, "Command: SET_ACCELERATION -> %.1f steps/sec^2", cmd.data.acceleration.accel);
                 break;
                 
             case MotorCommandType::SET_MICROSTEPS:
                 cmdName = "SET_MICROSTEPS";
                 setMicrosteps(cmd.data.microsteps.microsteps);
-                Serial.print("[Stepper] Command: SET_MICROSTEPS -> ");
-                Serial.println(cmd.data.microsteps.microsteps);
+                ESP_LOGI(TAG, "Command: SET_MICROSTEPS -> %u", cmd.data.microsteps.microsteps);
                 break;
         
             case MotorCommandType::HOME:
                 cmdName = "HOME";
                 home(0);  // Call home with no timeout (uses default timeout)
-                Serial.println("[Stepper] Command: HOME");
+                ESP_LOGI(TAG, "Command: HOME");
                 break;
                 
             case MotorCommandType::GET_STATUS:
@@ -444,9 +401,7 @@ void StepperMotorController::processCommandQueue(MotorCommandQueue* cmdQueue) {
                 break;
                 
             default:
-                Serial.print("[Stepper] Command: UNKNOWN (type=");
-                Serial.print((int)cmd.type);
-                Serial.println(")");
+                ESP_LOGW(TAG, "Command: UNKNOWN (type=%d)", (int)cmd.type);
                 break;
         }
     }
@@ -484,11 +439,11 @@ void StepperMotorController::stopMove() {
 
 bool StepperMotorController::resetEngine() {
     if (stepperEngine == nullptr) {
-        Serial.println("[Stepper] ERROR: Cannot reset engine - engine not initialized");
+        ESP_LOGE(TAG, "Cannot reset engine - engine not initialized");
         return false;
     }
     
-    Serial.println("[Stepper] Resetting FastAccelStepper engine...");
+    ESP_LOGI(TAG, "Resetting FastAccelStepper engine...");
     
     // Stop any current movement
     stepper->forceStop();
@@ -506,7 +461,7 @@ bool StepperMotorController::resetEngine() {
     // Reconnect the stepper instance
     stepper = stepperEngine->stepperConnectToPin(stepPin);
     if (stepper == nullptr) {
-        Serial.println("[Stepper] ERROR: Failed to reconnect stepper after engine reset");
+        ESP_LOGE(TAG, "Failed to reconnect stepper after engine reset");
         return false;
     }
     
@@ -516,7 +471,7 @@ bool StepperMotorController::resetEngine() {
     stepper->setAcceleration(acceleration);
     stepper->setCurrentPosition(savedPosition);
     
-    Serial.println("[Stepper] Engine reset complete");
+    ESP_LOGI(TAG, "Engine reset complete");
     return true;
 }
 
@@ -542,7 +497,7 @@ bool StepperMotorController::startDance(DanceType danceType) {
     
     // Check if a dance is already in progress
     if (danceInProgress && danceTaskHandle != nullptr) {
-        Serial.println("[Stepper] Dance already in progress, ignoring new request");
+        ESP_LOGW(TAG, "Dance already in progress, ignoring new request");
         return false;
     }
     
@@ -561,7 +516,7 @@ bool StepperMotorController::startDance(DanceType danceType) {
         1                           // Core 1 (same as motor control)
     );
     
-    Serial.print("[Stepper] Dance task started: ");
+    ESP_LOGI(TAG, "Dance task started");
     return true;
 }
 
@@ -571,21 +526,20 @@ void StepperMotorController::danceTaskWrapper(void* parameter) {
 }
 
 void StepperMotorController::danceTask() {
-    Serial.print("[Stepper] Dance task running: ");
+    ESP_LOGI(TAG, "Dance task running");
     bool success = performDance(currentDanceType);
-    
+
     // Check if dance was stopped (danceInProgress will be false if stopDance() was called)
     bool wasStopped = !danceInProgress;
-    
+
     // Mark dance as complete
     danceInProgress = false;
     danceTaskHandle = nullptr;
-    
-    Serial.print("[Stepper] Dance task complete: ");
+
     if (wasStopped) {
-        Serial.println("Stopped by user");
+        ESP_LOGI(TAG, "Dance task complete: Stopped by user");
     } else {
-        Serial.println(success ? "Success" : "Failed");
+        ESP_LOGI(TAG, "Dance task complete: %s", success ? "Success" : "Failed");
     }
     
     // Delete this task
@@ -594,11 +548,11 @@ void StepperMotorController::danceTask() {
 
 bool StepperMotorController::stopDance() {
     if (!danceInProgress) {
-        Serial.println("[Stepper] No dance in progress to stop");
+        ESP_LOGW(TAG, "No dance in progress to stop");
         return false;
     }
     
-    Serial.println("[Stepper] Stopping dance...");
+    ESP_LOGI(TAG, "Stopping dance...");
     
     // Stop motor movement immediately
     if (stepper != nullptr) {
@@ -620,7 +574,7 @@ bool StepperMotorController::startBehavior(BehaviorType behaviorType) {
     }
     
     if (behaviorInProgress && behaviorTaskHandle != nullptr) {
-        Serial.println("[Stepper] Behavior already in progress, ignoring new request");
+        ESP_LOGW(TAG, "Behavior already in progress, ignoring new request");
         return false;
     }
     
@@ -641,17 +595,17 @@ bool StepperMotorController::startBehavior(BehaviorType behaviorType) {
         "Scanning", "Sleeping", "Eating", "Alert", "Roaring",
         "Stalking", "Playing", "Resting", "Hunting", "Victory"
     };
-    Serial.println(behaviorNames[static_cast<int>(behaviorType)]);
+    ESP_LOGI(TAG, "Behavior task started: %s", behaviorNames[static_cast<int>(behaviorType)]);
     return true;
 }
 
 bool StepperMotorController::stopBehavior() {
     if (!behaviorInProgress) {
-        Serial.println("[Stepper] No behavior in progress to stop");
+        ESP_LOGW(TAG, "No behavior in progress to stop");
         return false;
     }
     
-    Serial.println("[Stepper] Stopping behavior...");
+    ESP_LOGI(TAG, "Stopping behavior...");
     
     if (stepper != nullptr) {
         stepper->forceStop();
@@ -671,21 +625,17 @@ void StepperMotorController::behaviorTask() {
         "Scanning", "Sleeping", "Eating", "Alert", "Roaring",
         "Stalking", "Playing", "Resting", "Hunting", "Victory"
     };
-    Serial.print("[Stepper] Behavior task running: ");
-    Serial.println(behaviorNames[static_cast<int>(currentBehaviorType)]);
+    ESP_LOGI(TAG, "Behavior task running: %s", behaviorNames[static_cast<int>(currentBehaviorType)]);
     bool success = performBehavior(currentBehaviorType);
-    
+
     bool wasStopped = !behaviorInProgress;
     behaviorInProgress = false;
     behaviorTaskHandle = nullptr;
-    
-    Serial.print("[Stepper] Behavior task complete: ");
-    Serial.print(behaviorNames[static_cast<int>(currentBehaviorType)]);
-    Serial.print(" - ");
+
     if (wasStopped) {
-        Serial.println("Stopped by user");
+        ESP_LOGI(TAG, "Behavior task complete: %s - Stopped by user", behaviorNames[static_cast<int>(currentBehaviorType)]);
     } else {
-        Serial.println(success ? "Success" : "Failed");
+        ESP_LOGI(TAG, "Behavior task complete: %s - %s", behaviorNames[static_cast<int>(currentBehaviorType)], success ? "Success" : "Failed");
     }
     
     vTaskDelete(nullptr);
@@ -696,11 +646,9 @@ bool StepperMotorController::performDance(DanceType danceType) {
         return false;
     }
     
-    Serial.print("[Stepper] Performing dance: ");
-    
     switch (danceType) {
         case DanceType::TWIST: {
-            Serial.println("Twist");
+            ESP_LOGD(TAG, "Performing dance: Twist");
             // Chubby Checkers "Twist" - back and forth with increasing then decreasing arcs
             // Pattern: +45°, -135°, +225°, -315°, +135°, -225°, +135°, -45° (relative movements)
             float relativeMoves[] = {45.0f, -135.0f, 225.0f, -315.0f, 135.0f, -225.0f, 135.0f, -45.0f};
@@ -709,7 +657,7 @@ bool StepperMotorController::performDance(DanceType danceType) {
             for (int i = 0; i < numMoves; i++) {
                 // Check if dance was stopped
                 if (!danceInProgress) {
-                    Serial.println("[Stepper] Dance stopped by user");
+                    ESP_LOGD(TAG, "Dance stopped by user");
                     return false;
                 }
                 moveDegrees(relativeMoves[i]);
@@ -720,7 +668,7 @@ bool StepperMotorController::performDance(DanceType danceType) {
                     vTaskDelay(pdMS_TO_TICKS(100)); // Longer delay to feed watchdog
                 }
                 if (!danceInProgress) {
-                    Serial.println("[Stepper] Dance stopped by user");
+                    ESP_LOGD(TAG, "Dance stopped by user");
                     return false;
                 }
                 vTaskDelay(pdMS_TO_TICKS(200)); // Brief pause between moves
@@ -729,12 +677,12 @@ bool StepperMotorController::performDance(DanceType danceType) {
         }
         
         case DanceType::SHAKE: {
-            Serial.println("Shake");
+            ESP_LOGD(TAG, "Performing dance: Shake");
             // Quick shake - rapid small back and forth movements (relative)
             for (int i = 0; i < 8; i++) {
                 // Check if dance was stopped
                 if (!danceInProgress) {
-                    Serial.println("[Stepper] Dance stopped by user");
+                    ESP_LOGD(TAG, "Dance stopped by user");
                     return false;
                 }
                 float relativeAngle = (i % 2 == 0) ? 30.0f : -30.0f;
@@ -744,7 +692,7 @@ bool StepperMotorController::performDance(DanceType danceType) {
                     vTaskDelay(pdMS_TO_TICKS(100)); // Longer delay to feed watchdog
                 }
                 if (!danceInProgress) {
-                    Serial.println("[Stepper] Dance stopped by user");
+                    ESP_LOGD(TAG, "Dance stopped by user");
                     return false;
                 }
                 vTaskDelay(pdMS_TO_TICKS(50)); // Quick pause
@@ -753,7 +701,7 @@ bool StepperMotorController::performDance(DanceType danceType) {
         }
         
         case DanceType::SPIN: {
-            Serial.println("Spin");
+            ESP_LOGD(TAG, "Performing dance: Spin");
             // Full rotations back and forth (relative movements)
             float relativeMoves[] = {360.0f, -720.0f, 720.0f, -360.0f};
             int numMoves = sizeof(relativeMoves) / sizeof(relativeMoves[0]);
@@ -761,7 +709,7 @@ bool StepperMotorController::performDance(DanceType danceType) {
             for (int i = 0; i < numMoves; i++) {
                 // Check if dance was stopped
                 if (!danceInProgress) {
-                    Serial.println("[Stepper] Dance stopped by user");
+                    ESP_LOGD(TAG, "Dance stopped by user");
                     return false;
                 }
                 moveDegrees(relativeMoves[i]);
@@ -770,7 +718,7 @@ bool StepperMotorController::performDance(DanceType danceType) {
                     vTaskDelay(pdMS_TO_TICKS(100)); // Longer delay to feed watchdog
                 }
                 if (!danceInProgress) {
-                    Serial.println("[Stepper] Dance stopped by user");
+                    ESP_LOGD(TAG, "Dance stopped by user");
                     return false;
                 }
                 vTaskDelay(pdMS_TO_TICKS(300));
@@ -779,12 +727,12 @@ bool StepperMotorController::performDance(DanceType danceType) {
         }
         
         case DanceType::WIGGLE: {
-            Serial.println("Wiggle");
+            ESP_LOGD(TAG, "Performing dance: Wiggle");
             // Small wiggles in place (relative movements)
             for (int i = 0; i < 12; i++) {
                 // Check if dance was stopped
                 if (!danceInProgress) {
-                    Serial.println("[Stepper] Dance stopped by user");
+                    ESP_LOGD(TAG, "Dance stopped by user");
                     return false;
                 }
                 float relativeAngle = (i % 2 == 0) ? 15.0f : -15.0f;
@@ -794,7 +742,7 @@ bool StepperMotorController::performDance(DanceType danceType) {
                     vTaskDelay(pdMS_TO_TICKS(100)); // Longer delay to feed watchdog
                 }
                 if (!danceInProgress) {
-                    Serial.println("[Stepper] Dance stopped by user");
+                    ESP_LOGD(TAG, "Dance stopped by user");
                     return false;
                 }
                 vTaskDelay(pdMS_TO_TICKS(100));
@@ -803,7 +751,7 @@ bool StepperMotorController::performDance(DanceType danceType) {
         }
         
         case DanceType::WATUSI: {
-            Serial.println("Watusi");
+            ESP_LOGD(TAG, "Performing dance: Watusi");
             // Watusi - side-to-side alternating movements with increasing amplitude
             // Pattern: alternating left-right with increasing then decreasing angles
             float relativeMoves[] = {20.0f, -20.0f, 40.0f, -40.0f, 60.0f, -60.0f, 80.0f, -80.0f, 
@@ -813,7 +761,7 @@ bool StepperMotorController::performDance(DanceType danceType) {
             for (int i = 0; i < numMoves; i++) {
                 // Check if dance was stopped
                 if (!danceInProgress) {
-                    Serial.println("[Stepper] Dance stopped by user");
+                    ESP_LOGD(TAG, "Dance stopped by user");
                     return false;
                 }
                 moveDegrees(relativeMoves[i]);
@@ -822,7 +770,7 @@ bool StepperMotorController::performDance(DanceType danceType) {
                     vTaskDelay(pdMS_TO_TICKS(100));
                 }
                 if (!danceInProgress) {
-                    Serial.println("[Stepper] Dance stopped by user");
+                    ESP_LOGD(TAG, "Dance stopped by user");
                     return false;
                 }
                 vTaskDelay(pdMS_TO_TICKS(150));
@@ -831,13 +779,13 @@ bool StepperMotorController::performDance(DanceType danceType) {
         }
         
         case DanceType::PEPPERMINT_TWIST: {
-            Serial.println("Peppermint Twist");
+            ESP_LOGD(TAG, "Performing dance: Peppermint Twist");
             // Peppermint Twist - rapid alternating twists back and forth
             // Pattern: rapid alternating movements with varying speeds
             for (int i = 0; i < 16; i++) {
                 // Check if dance was stopped
                 if (!danceInProgress) {
-                    Serial.println("[Stepper] Dance stopped by user");
+                    ESP_LOGD(TAG, "Dance stopped by user");
                     return false;
                 }
                 // Alternating pattern with varying amplitudes
@@ -858,7 +806,7 @@ bool StepperMotorController::performDance(DanceType danceType) {
                     vTaskDelay(pdMS_TO_TICKS(100));
                 }
                 if (!danceInProgress) {
-                    Serial.println("[Stepper] Dance stopped by user");
+                    ESP_LOGD(TAG, "Dance stopped by user");
                     return false;
                 }
                 vTaskDelay(pdMS_TO_TICKS(100)); // Quick transitions
@@ -867,7 +815,7 @@ bool StepperMotorController::performDance(DanceType danceType) {
         }
     }
     
-    Serial.println("[Stepper] Dance complete");
+    ESP_LOGD(TAG, "Dance complete");
     return true;
 }
 
@@ -884,11 +832,9 @@ bool StepperMotorController::performBehavior(BehaviorType behaviorType) {
         return behaviorInProgress;
     };
     
-    Serial.print("[Stepper] Performing behavior: ");
-    
     switch (behaviorType) {
         case BehaviorType::SCANNING: {
-            Serial.println("Scanning");
+            ESP_LOGD(TAG, "Performing behavior: Scanning");
             setSpeedInHz(600.0f);
             for (int i = 0; i < 4; i++) {
                 if (!behaviorInProgress) return false;
@@ -904,7 +850,7 @@ bool StepperMotorController::performBehavior(BehaviorType behaviorType) {
         }
         
         case BehaviorType::SLEEPING: {
-            Serial.println("Sleeping");
+            ESP_LOGD(TAG, "Performing behavior: Sleeping");
             setSpeedInHz(250.0f);
             while (behaviorInProgress) {
                 moveDegrees(6.0f);
@@ -918,7 +864,7 @@ bool StepperMotorController::performBehavior(BehaviorType behaviorType) {
         }
         
         case BehaviorType::EATING: {
-            Serial.println("Eating");
+            ESP_LOGD(TAG, "Performing behavior: Eating");
             setSpeedInHz(1000.0f);
             for (int i = 0; i < 10; i++) {
                 if (!behaviorInProgress) return false;
@@ -933,7 +879,7 @@ bool StepperMotorController::performBehavior(BehaviorType behaviorType) {
         }
         
         case BehaviorType::ALERT: {
-            Serial.println("Alert");
+            ESP_LOGD(TAG, "Performing behavior: Alert");
             setSpeedInHz(1800.0f);
             for (int i = 0; i < 20; i++) {
                 if (!behaviorInProgress) return false;
@@ -946,7 +892,7 @@ bool StepperMotorController::performBehavior(BehaviorType behaviorType) {
         }
         
         case BehaviorType::ROARING: {
-            Serial.println("Roaring");
+            ESP_LOGD(TAG, "Performing behavior: Roaring");
             setSpeedInHz(1300.0f);
             for (int r = 0; r < 2; r++) {
                 if (!behaviorInProgress) return false;
@@ -964,7 +910,7 @@ bool StepperMotorController::performBehavior(BehaviorType behaviorType) {
         }
         
         case BehaviorType::STALKING: {
-            Serial.println("Stalking");
+            ESP_LOGD(TAG, "Performing behavior: Stalking");
             setSpeedInHz(600.0f);
             for (int i = 0; i < 8; i++) {
                 if (!behaviorInProgress) return false;
@@ -977,7 +923,7 @@ bool StepperMotorController::performBehavior(BehaviorType behaviorType) {
         }
         
         case BehaviorType::PLAYING: {
-            Serial.println("Playing");
+            ESP_LOGD(TAG, "Performing behavior: Playing");
             setSpeedInHz(1200.0f);
             float moves[] = {20, -30, 60, -15, 90, -45, 30, -60, 15, -20, 70, -35, 25, -55};
             int numMoves = sizeof(moves) / sizeof(moves[0]);
@@ -991,7 +937,7 @@ bool StepperMotorController::performBehavior(BehaviorType behaviorType) {
         }
         
         case BehaviorType::RESTING: {
-            Serial.println("Resting");
+            ESP_LOGD(TAG, "Performing behavior: Resting");
             setSpeedInHz(300.0f);
             int cycle = 0;
             while (behaviorInProgress) {
@@ -1014,7 +960,7 @@ bool StepperMotorController::performBehavior(BehaviorType behaviorType) {
         }
         
         case BehaviorType::HUNTING: {
-            Serial.println("Hunting");
+            ESP_LOGD(TAG, "Performing behavior: Hunting");
             setSpeedInHz(900.0f);
             for (int i = 0; i < 5; i++) {
                 if (!behaviorInProgress) return false;
@@ -1029,7 +975,7 @@ bool StepperMotorController::performBehavior(BehaviorType behaviorType) {
         }
         
         case BehaviorType::VICTORY: {
-            Serial.println("Victory");
+            ESP_LOGD(TAG, "Performing behavior: Victory");
             setSpeedInHz(1700.0f);
             moveDegrees(360.0f);
             if (!waitForMove(30000)) return false;
@@ -1053,7 +999,7 @@ bool StepperMotorController::performBehavior(BehaviorType behaviorType) {
         }
     }
     
-    Serial.println("[Stepper] Behavior complete");
+    ESP_LOGD(TAG, "Behavior complete");
     return true;
 }
 

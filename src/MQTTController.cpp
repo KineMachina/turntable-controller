@@ -2,6 +2,9 @@
 #include <FreeRTOS.h>
 #include <task.h>
 #include <ArduinoJson.h>
+#include "RuntimeLog.h"
+
+static const char* TAG = "MQTT";
 
 // Static instance pointer for callbacks
 MQTTController* MQTTController::instance = nullptr;
@@ -56,13 +59,8 @@ void MQTTController::buildTopics()
     snprintf(nameTopic, sizeof(nameTopic), "krp/%s/$name", config.deviceId);
     snprintf(capabilitiesTopic, sizeof(capabilitiesTopic), "krp/%s/$capabilities", config.deviceId);
 
-    Serial.println("[MQTT] Topics configured (KRP v1.0):");
-    Serial.printf("  Command:      %s\n", commandTopic);
-    Serial.printf("  Status:       %s\n", statusTopic);
-    Serial.printf("  Response:     %s\n", responseTopic);
-    Serial.printf("  $state:       %s\n", stateTopic);
-    Serial.printf("  $name:        %s\n", nameTopic);
-    Serial.printf("  $capabilities:%s\n", capabilitiesTopic);
+    ESP_LOGI(TAG, "Topics configured (KRP v1.0): Command=%s Status=%s Response=%s $state=%s $name=%s $capabilities=%s",
+             commandTopic, statusTopic, responseTopic, stateTopic, nameTopic, capabilitiesTopic);
 }
 
 void MQTTController::subscribeToCommands()
@@ -73,7 +71,7 @@ void MQTTController::subscribeToCommands()
     }
 
     uint16_t packetId = mqttClient.subscribe(commandTopic, config.qosCommands);
-    Serial.printf("[MQTT] Subscribed to: %s (QoS %u, packet ID: %u)\n", commandTopic, config.qosCommands, packetId);
+    ESP_LOGI(TAG, "Subscribed to: %s (QoS %u, packet ID: %u)", commandTopic, config.qosCommands, packetId);
 }
 
 // ─── Task 2: Birth sequence ─────────────────────────────────────────────────
@@ -87,11 +85,11 @@ void MQTTController::publishBirthMessages()
 
     // 1. $state → "online" (retained, QoS 1)
     mqttClient.publish(stateTopic, 1, true, "online", strlen("online"));
-    Serial.printf("[MQTT] Published $state=online to %s (retained)\n", stateTopic);
+    ESP_LOGI(TAG, "Published $state=online to %s (retained)", stateTopic);
 
     // 2. $name → config.deviceName (retained, QoS 1)
     mqttClient.publish(nameTopic, 1, true, config.deviceName, strlen(config.deviceName));
-    Serial.printf("[MQTT] Published $name=%s to %s (retained)\n", config.deviceName, nameTopic);
+    ESP_LOGI(TAG, "Published $name=%s to %s (retained)", config.deviceName, nameTopic);
 
     // 3. $capabilities → JSON (retained, QoS 1)
     JsonDocument doc;
@@ -102,41 +100,38 @@ void MQTTController::publishBirthMessages()
     doc["platform"] = "esp32s3";
     doc["protocol_version"] = "1.0";
 
-    // capabilities.motion.joints
-    JsonObject capabilities = doc["capabilities"].to<JsonObject>();
-    JsonObject motion = capabilities["motion"].to<JsonObject>();
-    JsonArray joints = motion["joints"].to<JsonArray>();
-    JsonObject turntableJoint = joints.add<JsonObject>();
-    turntableJoint["name"] = "turntable";
-    turntableJoint["type"] = "stepper";
+    // capabilities array (KRP v1.0 generic format)
+    JsonArray caps = doc["capabilities"].to<JsonArray>();
+
+    // joints capability
+    JsonObject jointsCap = caps.add<JsonObject>();
+    jointsCap["type"] = "joints";
+    JsonArray jointItems = jointsCap["items"].to<JsonArray>();
+    JsonObject turntableJoint = jointItems.add<JsonObject>();
+    turntableJoint["id"] = "turntable";
+    turntableJoint["joint_type"] = "stepper";
     turntableJoint["continuous"] = true;
     turntableJoint["home"] = 0;
 
-    // capabilities.behaviors
-    JsonArray behaviors = capabilities["behaviors"].to<JsonArray>();
+    // behaviors capability
+    JsonObject behaviorsCap = caps.add<JsonObject>();
+    behaviorsCap["type"] = "behaviors";
+    JsonArray behaviorItems = behaviorsCap["items"].to<JsonArray>();
     // Behavior types
-    behaviors.add("scanning");
-    behaviors.add("sleeping");
-    behaviors.add("eating");
-    behaviors.add("alert");
-    behaviors.add("roaring");
-    behaviors.add("stalking");
-    behaviors.add("playing");
-    behaviors.add("resting");
-    behaviors.add("hunting");
-    behaviors.add("victory");
-    // Dance types
-    behaviors.add("twist");
-    behaviors.add("shake");
-    behaviors.add("spin");
-    behaviors.add("wiggle");
-    behaviors.add("watusi");
-    behaviors.add("peppermint_twist");
+    const char* behaviorNames[] = {
+        "scanning", "sleeping", "eating", "alert", "roaring",
+        "stalking", "playing", "resting", "hunting", "victory",
+        "twist", "shake", "spin", "wiggle", "watusi", "peppermint_twist"
+    };
+    for (const char* name : behaviorNames) {
+        JsonObject item = behaviorItems.add<JsonObject>();
+        item["id"] = name;
+    }
 
     String capStr;
     serializeJson(doc, capStr);
     mqttClient.publish(capabilitiesTopic, 1, true, capStr.c_str(), capStr.length());
-    Serial.printf("[MQTT] Published $capabilities to %s (retained, %u bytes)\n", capabilitiesTopic, capStr.length());
+    ESP_LOGI(TAG, "Published $capabilities to %s (retained, %u bytes)", capabilitiesTopic, capStr.length());
 }
 
 // ─── Task 4: Lean KRP status publisher ───────────────────────────────────────
@@ -276,21 +271,21 @@ void MQTTController::handleCommand(const char* payload, size_t len)
 
     if (error)
     {
-        Serial.printf("[MQTT] ERROR: Invalid JSON: %s\n", error.c_str());
+        ESP_LOGE(TAG, "Invalid JSON: %s", error.c_str());
         publishResponse("unknown", false, "Invalid JSON");
         return;
     }
 
     if (!doc["command"].is<const char*>() && !doc["command"].is<String>())
     {
-        Serial.println("[MQTT] ERROR: Missing 'command' field");
+        ESP_LOGE(TAG, "Missing 'command' field");
         publishResponse("unknown", false, "Missing 'command' field");
         return;
     }
 
     String commandType = doc["command"].as<String>();
     commandType.toLowerCase();
-    Serial.printf("[MQTT] Handling command: %s\n", commandType.c_str());
+    ESP_LOGI(TAG, "Handling command: %s", commandType.c_str());
 
     // KRP v1.0 commands
     if (commandType == "move")
@@ -365,7 +360,7 @@ void MQTTController::handleCommand(const char* payload, size_t len)
     }
     else
     {
-        Serial.printf("[MQTT] ERROR: Unknown command: %s\n", commandType.c_str());
+        ESP_LOGE(TAG, "Unknown command: %s", commandType.c_str());
         publishResponse(commandType.c_str(), false, "Unknown command");
     }
 }
@@ -1059,13 +1054,10 @@ void MQTTController::onMqttConnect(bool sessionPresent)
         return;
     }
 
-    Serial.println("[MQTT] ========================================");
-    Serial.println("[MQTT] CONNECTED TO BROKER");
-    Serial.printf("[MQTT] Session present: %s\n", sessionPresent ? "Yes (resumed)" : "No (new session)");
-    Serial.printf("[MQTT] Broker: %s:%u\n", instance->config.broker, instance->config.port);
-    Serial.printf("[MQTT] Device ID: %s\n", instance->config.deviceId);
-    Serial.printf("[MQTT] Keepalive: %u seconds\n", instance->config.keepalive);
-    Serial.println("[MQTT] ========================================");
+    ESP_LOGI(TAG, "Connected to broker %s:%u (session %s, device %s, keepalive %us)",
+             instance->config.broker, instance->config.port,
+             sessionPresent ? "resumed" : "new",
+             instance->config.deviceId, instance->config.keepalive);
 
     // KRP v1.0 birth sequence
     instance->publishBirthMessages();
@@ -1075,12 +1067,12 @@ void MQTTController::onMqttConnect(bool sessionPresent)
 
     // Transition to ready state
     instance->mqttClient.publish(instance->stateTopic, 1, true, "ready", strlen("ready"));
-    Serial.printf("[MQTT] Published $state=ready to %s (retained)\n", instance->stateTopic);
+    ESP_LOGI(TAG, "Published $state=ready to %s (retained)", instance->stateTopic);
 
     // Publish initial status
-    Serial.println("[MQTT] Publishing initial status...");
+    ESP_LOGD(TAG, "Publishing initial status...");
     instance->publishStatus(true);
-    Serial.println("[MQTT] Initial status published");
+    ESP_LOGD(TAG, "Initial status published");
 }
 
 void MQTTController::onMqttDisconnect(AsyncMqttClientDisconnectReason reason)
@@ -1090,50 +1082,43 @@ void MQTTController::onMqttDisconnect(AsyncMqttClientDisconnectReason reason)
         return;
     }
 
-    Serial.println("[MQTT] ========================================");
-    Serial.println("[MQTT] DISCONNECTED FROM BROKER");
-    Serial.print("[MQTT] Reason code: ");
-    Serial.print((int)reason);
-    Serial.print(" (");
-
     // Human-readable disconnect reasons
+    const char* reasonStr;
     switch (reason)
     {
         case AsyncMqttClientDisconnectReason::TCP_DISCONNECTED:
-            Serial.print("TCP_DISCONNECTED - Network connection lost");
+            reasonStr = "TCP_DISCONNECTED - Network connection lost";
             break;
         case AsyncMqttClientDisconnectReason::MQTT_UNACCEPTABLE_PROTOCOL_VERSION:
-            Serial.print("MQTT_UNACCEPTABLE_PROTOCOL_VERSION - Protocol version mismatch");
+            reasonStr = "MQTT_UNACCEPTABLE_PROTOCOL_VERSION - Protocol version mismatch";
             break;
         case AsyncMqttClientDisconnectReason::MQTT_IDENTIFIER_REJECTED:
-            Serial.print("MQTT_IDENTIFIER_REJECTED - Client ID rejected by broker");
+            reasonStr = "MQTT_IDENTIFIER_REJECTED - Client ID rejected by broker";
             break;
         case AsyncMqttClientDisconnectReason::MQTT_SERVER_UNAVAILABLE:
-            Serial.print("MQTT_SERVER_UNAVAILABLE - Broker unavailable");
+            reasonStr = "MQTT_SERVER_UNAVAILABLE - Broker unavailable";
             break;
         case AsyncMqttClientDisconnectReason::MQTT_MALFORMED_CREDENTIALS:
-            Serial.print("MQTT_MALFORMED_CREDENTIALS - Invalid username/password");
+            reasonStr = "MQTT_MALFORMED_CREDENTIALS - Invalid username/password";
             break;
         case AsyncMqttClientDisconnectReason::MQTT_NOT_AUTHORIZED:
-            Serial.print("MQTT_NOT_AUTHORIZED - Authentication failed");
+            reasonStr = "MQTT_NOT_AUTHORIZED - Authentication failed";
             break;
         case AsyncMqttClientDisconnectReason::ESP8266_NOT_ENOUGH_SPACE:
-            Serial.print("ESP8266_NOT_ENOUGH_SPACE - Not enough space (ESP8266 specific)");
+            reasonStr = "ESP8266_NOT_ENOUGH_SPACE - Not enough space (ESP8266 specific)";
             break;
         case AsyncMqttClientDisconnectReason::TLS_BAD_FINGERPRINT:
-            Serial.print("TLS_BAD_FINGERPRINT - TLS fingerprint mismatch");
+            reasonStr = "TLS_BAD_FINGERPRINT - TLS fingerprint mismatch";
             break;
         default:
-            Serial.print("UNKNOWN");
+            reasonStr = "UNKNOWN";
             break;
     }
-    Serial.println(")");
 
-    if (instance->config.broker != nullptr)
-    {
-        Serial.printf("[MQTT] Broker was: %s:%u\n", instance->config.broker, instance->config.port);
-    }
-    Serial.println("[MQTT] ========================================");
+    ESP_LOGW(TAG, "Disconnected from broker: reason=%d (%s), broker=%s:%u",
+             (int)reason, reasonStr,
+             instance->config.broker ? instance->config.broker : "null",
+             instance->config.port);
 }
 
 void MQTTController::onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total)
@@ -1145,8 +1130,8 @@ void MQTTController::onMqttMessage(char* topic, char* payload, AsyncMqttClientMe
 
     if (index == 0)
     {
-        Serial.printf("[MQTT] Message received - Topic: %s, QoS: %u, Retain: %s, Total size: %zu bytes\n",
-                     topic, properties.qos, properties.retain ? "Yes" : "No", total);
+        ESP_LOGI(TAG, "Message received - Topic: %s, QoS: %u, Retain: %s, Total size: %zu bytes",
+                 topic, properties.qos, properties.retain ? "Yes" : "No", total);
     }
 
     // Handle multi-part messages
@@ -1176,15 +1161,15 @@ void MQTTController::onMqttMessage(char* topic, char* payload, AsyncMqttClientMe
         cmd.payload[sizeof(cmd.payload) - 1] = '\0';
         cmd.payloadLen = fullPayloadLen;
 
-        Serial.printf("[MQTT] Queuing command - Payload: %.*s\n", (int)fullPayloadLen, fullPayload);
+        ESP_LOGD(TAG, "Queuing command - Payload: %.*s", (int)fullPayloadLen, fullPayload);
 
         if (xQueueSend(instance->mqttCommandQueue, &cmd, 0) != pdTRUE)
         {
-            Serial.println("[MQTT] ERROR: Command queue full, dropping message");
+            ESP_LOGE(TAG, "Command queue full, dropping message");
         }
         else
         {
-            Serial.println("[MQTT] Command queued successfully");
+            ESP_LOGD(TAG, "Command queued successfully");
         }
 
         fullPayloadLen = 0;
@@ -1197,7 +1182,7 @@ void MQTTController::onMqttPublish(uint16_t packetId)
     // Note: packetId 0 means QoS 0 (no acknowledgment), so we only log QoS 1/2 publishes
     if (packetId > 0)
     {
-        Serial.printf("[MQTT] Publish confirmed (packet ID: %u)\n", packetId);
+        ESP_LOGD(TAG, "Publish confirmed (packet ID: %u)", packetId);
     }
 }
 
@@ -1215,7 +1200,7 @@ void MQTTController::mqttTaskWrapper(void* parameter)
 
 void MQTTController::mqttTask()
 {
-    Serial.println("[MQTT] Task started");
+    ESP_LOGI(TAG, "Task started");
 
     MQTTCommand cmd;
     const TickType_t updateInterval = pdMS_TO_TICKS(100);
@@ -1226,8 +1211,8 @@ void MQTTController::mqttTask()
         // Process commands from queue
         if (xQueueReceive(mqttCommandQueue, &cmd, pdMS_TO_TICKS(100)) == pdTRUE)
         {
-            Serial.printf("[MQTT] Processing queued command - Payload: %.*s\n",
-                         (int)cmd.payloadLen, cmd.payload);
+            ESP_LOGD(TAG, "Processing queued command - Payload: %.*s",
+                     (int)cmd.payloadLen, cmd.payload);
             handleCommand(cmd.payload, cmd.payloadLen);
         }
 
@@ -1271,26 +1256,22 @@ bool MQTTController::begin(StepperMotorController* stepperCtrl, MotorCommandQueu
         config = *cfg;
     }
 
-    Serial.println("[MQTT] ========================================");
-    Serial.println("[MQTT] Initializing MQTT Controller...");
+    ESP_LOGI(TAG, "Initializing MQTT Controller...");
 
     if (!config.enabled)
     {
-        Serial.println("[MQTT] MQTT disabled in configuration - aborting initialization");
-        Serial.println("[MQTT] ========================================");
+        ESP_LOGW(TAG, "MQTT disabled in configuration - aborting initialization");
         return false;
     }
 
     // Check WiFi connection
     if (WiFi.status() != WL_CONNECTED)
     {
-        Serial.println("[MQTT] ERROR: WiFi not connected, cannot initialize MQTT");
-        Serial.printf("[MQTT] WiFi status: %d\n", WiFi.status());
-        Serial.println("[MQTT] ========================================");
+        ESP_LOGE(TAG, "WiFi not connected, cannot initialize MQTT (status: %d)", WiFi.status());
         return false;
     }
 
-    Serial.printf("[MQTT] WiFi connected: %s\n", WiFi.localIP().toString().c_str());
+    ESP_LOGI(TAG, "WiFi connected: %s", WiFi.localIP().toString().c_str());
 
     // Build topic strings
     buildTopics();
@@ -1299,47 +1280,39 @@ bool MQTTController::begin(StepperMotorController* stepperCtrl, MotorCommandQueu
     mqttCommandQueue = xQueueCreate(MQTT_QUEUE_SIZE, sizeof(MQTTCommand));
     if (mqttCommandQueue == nullptr)
     {
-        Serial.println("[MQTT] ERROR: Failed to create command queue");
-        Serial.println("[MQTT] ========================================");
+        ESP_LOGE(TAG, "Failed to create command queue");
         return false;
     }
-    Serial.printf("[MQTT] Command queue created (size: %zu)\n", MQTT_QUEUE_SIZE);
+    ESP_LOGI(TAG, "Command queue created (size: %zu)", MQTT_QUEUE_SIZE);
 
     // Setup MQTT client callbacks
-    Serial.println("[MQTT] Registering callbacks...");
+    ESP_LOGD(TAG, "Registering callbacks...");
     mqttClient.onConnect(onMqttConnect);
     mqttClient.onDisconnect(onMqttDisconnect);
     mqttClient.onMessage(onMqttMessage);
     mqttClient.onPublish(onMqttPublish);
 
     // Configure MQTT client
-    Serial.println("[MQTT] Configuring client...");
     mqttClient.setServer(config.broker, config.port);
     mqttClient.setKeepAlive(config.keepalive);
-    Serial.printf("[MQTT] Server: %s:%u\n", config.broker, config.port);
-    Serial.printf("[MQTT] Keepalive: %u seconds\n", config.keepalive);
+    ESP_LOGI(TAG, "Server: %s:%u, Keepalive: %u seconds", config.broker, config.port, config.keepalive);
 
     if (strlen(config.username) > 0)
     {
         mqttClient.setCredentials(config.username, config.password);
-        Serial.printf("[MQTT] Authentication: Username='%s' (password set)\n", config.username);
+        ESP_LOGI(TAG, "Authentication: Username='%s' (password set)", config.username);
     }
     else
     {
-        Serial.println("[MQTT] Authentication: None (anonymous)");
+        ESP_LOGI(TAG, "Authentication: None (anonymous)");
     }
 
     // Set LWT (Last Will and Testament) - KRP v1.0: $state → "offline"
     mqttClient.setWill(stateTopic, 1, true, "offline", strlen("offline"));
-    Serial.printf("[MQTT] LWT configured: %s (QoS 1, retained)\n", stateTopic);
+    ESP_LOGI(TAG, "LWT configured: %s (QoS 1, retained)", stateTopic);
 
     // Connect to broker
-    Serial.println("[MQTT] ========================================");
-    Serial.print("[MQTT] Attempting connection to broker: ");
-    Serial.print(config.broker);
-    Serial.print(":");
-    Serial.println(config.port);
-    Serial.println("[MQTT] Waiting for connection callback...");
+    ESP_LOGI(TAG, "Attempting connection to broker: %s:%u", config.broker, config.port);
 
     mqttClient.connect();
 
@@ -1356,15 +1329,12 @@ bool MQTTController::begin(StepperMotorController* stepperCtrl, MotorCommandQueu
 
     if (mqttTaskHandle == nullptr)
     {
-        Serial.println("[MQTT] ERROR: Failed to create MQTT task");
-        Serial.println("[MQTT] ========================================");
+        ESP_LOGE(TAG, "Failed to create MQTT task");
         return false;
     }
 
-    Serial.printf("[MQTT] MQTT task created (handle: %p, stack: 4096 bytes, priority: 2, core: 0)\n", mqttTaskHandle);
-    Serial.println("[MQTT] Controller initialization complete");
-    Serial.println("[MQTT] Note: Connection status will be reported in connect/disconnect callbacks");
-    Serial.println("[MQTT] ========================================");
+    ESP_LOGI(TAG, "MQTT task created (handle: %p, stack: 4096 bytes, priority: 2, core: 0)", mqttTaskHandle);
+    ESP_LOGI(TAG, "Controller initialization complete");
     return true;
 }
 
@@ -1424,7 +1394,7 @@ bool MQTTController::restart()
 {
     if (!config.enabled)
     {
-        Serial.println("[MQTT] Cannot restart - MQTT disabled in configuration");
+        ESP_LOGW(TAG, "Cannot restart - MQTT disabled in configuration");
         // If task exists but MQTT is disabled, disconnect
         if (mqttTaskHandle != nullptr && mqttClient.connected())
         {
@@ -1435,7 +1405,7 @@ bool MQTTController::restart()
 
     if (WiFi.status() != WL_CONNECTED)
     {
-        Serial.println("[MQTT] Cannot restart - WiFi not connected");
+        ESP_LOGE(TAG, "Cannot restart - WiFi not connected");
         return false;
     }
 
@@ -1443,63 +1413,55 @@ bool MQTTController::restart()
     // User needs to reboot for initial setup
     if (mqttTaskHandle == nullptr)
     {
-        Serial.println("[MQTT] Cannot restart - MQTT was not previously initialized. Please reboot device.");
+        ESP_LOGW(TAG, "Cannot restart - MQTT was not previously initialized. Please reboot device.");
         return false;
     }
 
-    Serial.println("[MQTT] ========================================");
-    Serial.println("[MQTT] Restarting MQTT connection...");
+    ESP_LOGI(TAG, "Restarting MQTT connection...");
 
     // Disconnect if currently connected
     if (mqttClient.connected())
     {
         // Graceful KRP shutdown: publish offline before disconnect
-        Serial.println("[MQTT] Publishing offline state (graceful shutdown)...");
+        ESP_LOGD(TAG, "Publishing offline state (graceful shutdown)...");
         mqttClient.publish(stateTopic, 1, true, "offline", strlen("offline"));
 
-        Serial.println("[MQTT] Disconnecting existing connection...");
+        ESP_LOGD(TAG, "Disconnecting existing connection...");
         mqttClient.disconnect();
         // Wait a bit for disconnect to complete
         delay(500);
-        Serial.println("[MQTT] Disconnect complete");
+        ESP_LOGD(TAG, "Disconnect complete");
     }
     else
     {
-        Serial.println("[MQTT] No existing connection to disconnect");
+        ESP_LOGD(TAG, "No existing connection to disconnect");
     }
 
     // Rebuild topics in case config changed
-    Serial.println("[MQTT] Rebuilding topics...");
+    ESP_LOGD(TAG, "Rebuilding topics...");
     buildTopics();
 
     // Reconfigure client
-    Serial.println("[MQTT] Reconfiguring client...");
     mqttClient.setServer(config.broker, config.port);
     mqttClient.setKeepAlive(config.keepalive);
-    Serial.printf("[MQTT] Server: %s:%u\n", config.broker, config.port);
-    Serial.printf("[MQTT] Keepalive: %u seconds\n", config.keepalive);
+    ESP_LOGI(TAG, "Server: %s:%u, Keepalive: %u seconds", config.broker, config.port, config.keepalive);
 
     if (strlen(config.username) > 0)
     {
         mqttClient.setCredentials(config.username, config.password);
-        Serial.printf("[MQTT] Authentication: Username='%s' (password set)\n", config.username);
+        ESP_LOGI(TAG, "Authentication: Username='%s' (password set)", config.username);
     }
     else
     {
         mqttClient.setCredentials("", "");
-        Serial.println("[MQTT] Authentication: None (anonymous)");
+        ESP_LOGI(TAG, "Authentication: None (anonymous)");
     }
 
     mqttClient.setWill(stateTopic, 1, true, "offline", strlen("offline"));
-    Serial.printf("[MQTT] LWT configured: %s (QoS 1, retained)\n", stateTopic);
+    ESP_LOGI(TAG, "LWT configured: %s (QoS 1, retained)", stateTopic);
 
     // Connect
-    Serial.println("[MQTT] ========================================");
-    Serial.print("[MQTT] Attempting connection to broker: ");
-    Serial.print(config.broker);
-    Serial.print(":");
-    Serial.println(config.port);
-    Serial.println("[MQTT] Waiting for connection callback...");
+    ESP_LOGI(TAG, "Attempting connection to broker: %s:%u", config.broker, config.port);
 
     mqttClient.connect();
 

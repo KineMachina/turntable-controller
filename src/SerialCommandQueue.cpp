@@ -1,4 +1,7 @@
 #include "SerialCommandQueue.h"
+#include "RuntimeLog.h"
+
+static const char* TAG = "SerialQueue";
 
 SerialCommandQueue::SerialCommandQueue() : commandQueue(nullptr) {
 }
@@ -17,17 +20,17 @@ bool SerialCommandQueue::begin() {
     
     commandQueue = xQueueCreate(QUEUE_SIZE, MAX_CMD_LENGTH);
     if (commandQueue == nullptr) {
-        Serial.println("[SerialCommandQueue] ERROR: Failed to create queue");
+        ESP_LOGE(TAG, "Failed to create queue");
         return false;
     }
     
-    Serial.println("[SerialCommandQueue] Queue created successfully");
+    ESP_LOGI(TAG, "Queue created successfully");
     return true;
 }
 
 bool SerialCommandQueue::sendCommand(const char* cmd, TickType_t timeoutMs) {
     if (commandQueue == nullptr) {
-        Serial.println("[SerialCommandQueue] ERROR: Queue not initialized");
+        ESP_LOGE(TAG, "Queue not initialized");
         return false;
     }
     
@@ -36,12 +39,12 @@ bool SerialCommandQueue::sendCommand(const char* cmd, TickType_t timeoutMs) {
     }
     
     if (strlen(cmd) >= MAX_CMD_LENGTH) {
-        Serial.println("[SerialCommandQueue] WARNING: Command too long, truncating");
+        ESP_LOGW(TAG, "Command too long, truncating");
     }
     
     BaseType_t result = xQueueSend(commandQueue, cmd, timeoutMs);
     if (result != pdTRUE) {
-        Serial.print("[SerialCommandQueue] WARNING: Failed to send command - queue may be full");
+        ESP_LOGW(TAG, "Failed to send command - queue may be full");
         return false;
     }
     

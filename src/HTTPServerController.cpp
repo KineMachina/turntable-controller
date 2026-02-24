@@ -2,6 +2,9 @@
 #include <ArduinoJson.h>
 #include <FreeRTOS.h>
 #include <task.h>
+#include "RuntimeLog.h"
+
+static const char* TAG = "HTTP";
 
 // HTML template stored in PROGMEM to avoid RAM usage and blocking string concatenation
 const char html_template[] PROGMEM = R"rawliteral(
@@ -628,9 +631,8 @@ HTTPServerController::~HTTPServerController()
 
 bool HTTPServerController::initWiFi()
 {
-    Serial.println("Initializing WiFi...");
-    Serial.print("Connecting to: ");
-    Serial.println(wifiSSID);
+    ESP_LOGI(TAG, "Initializing WiFi...");
+    ESP_LOGI(TAG, "Connecting to: %s", wifiSSID);
 
     WiFi.mode(WIFI_STA);
     WiFi.begin(wifiSSID, wifiPassword);
@@ -640,22 +642,19 @@ bool HTTPServerController::initWiFi()
     while (WiFi.status() != WL_CONNECTED && attempts < 30)
     {
         delay(500);
-        Serial.print(".");
+        ESP_LOGD(TAG, ".");
         attempts++;
     }
 
     if (WiFi.status() == WL_CONNECTED)
     {
-        Serial.println();
-        Serial.println("WiFi connected!");
-        Serial.print("IP address: ");
-        Serial.println(WiFi.localIP());
+        ESP_LOGI(TAG, "WiFi connected!");
+        ESP_LOGI(TAG, "IP address: %s", WiFi.localIP().toString().c_str());
         return true;
     }
     else
     {
-        Serial.println();
-        Serial.println("WiFi connection failed!");
+        ESP_LOGE(TAG, "WiFi connection failed!");
         return false;
     }
 }
@@ -665,36 +664,31 @@ void HTTPServerController::logRequest(AsyncWebServerRequest *request, const char
     if (!request)
         return;
 
-    // Log method, endpoint, client IP, and parameters
-    Serial.print("[HTTP] ");
-    Serial.print(request->method() == HTTP_GET ? "GET" : request->method() == HTTP_POST ? "POST"
+    // Build method string
+    const char* method = request->method() == HTTP_GET ? "GET" : request->method() == HTTP_POST ? "POST"
                                                      : request->method() == HTTP_PUT    ? "PUT"
                                                      : request->method() == HTTP_DELETE ? "DELETE"
-                                                                                        : "UNKNOWN");
-    Serial.print(" ");
-    Serial.print(endpoint);
+                                                                                        : "UNKNOWN";
 
-    // Log client IP
-    Serial.print(" from ");
-    Serial.print(request->client()->remoteIP());
-
-    // Log query parameters
+    // Build query parameters string
+    String params;
     int argCount = request->args();
     if (argCount > 0)
     {
-        Serial.print(" [");
+        params = " [";
         for (int i = 0; i < argCount; i++)
         {
             if (i > 0)
-                Serial.print(", ");
-            Serial.print(request->argName(i));
-            Serial.print("=");
-            Serial.print(request->arg(i));
+                params += ", ";
+            params += request->argName(i);
+            params += "=";
+            params += request->arg(i);
         }
-        Serial.print("]");
+        params += "]";
     }
 
-    // Log JSON body for POST requests
+    // Build body string for POST requests
+    String bodyStr;
     if (request->method() == HTTP_POST)
     {
         String body;
@@ -710,12 +704,13 @@ void HTTPServerController::logRequest(AsyncWebServerRequest *request, const char
 
         if (body.length() > 0)
         {
-            Serial.print(" Body: ");
-            Serial.print(body);
+            bodyStr = " Body: " + body;
         }
     }
 
-    Serial.println();
+    ESP_LOGI(TAG, "%s %s from %s%s%s", method, endpoint,
+             request->client()->remoteIP().toString().c_str(),
+             params.c_str(), bodyStr.c_str());
 }
 
 bool HTTPServerController::getJsonBody(AsyncWebServerRequest *request, String &body, String &errorMsg)
@@ -883,7 +878,7 @@ void HTTPServerController::handleRoot(AsyncWebServerRequest *request)
     // Send static HTML (no template processing needed - uses AJAX for data)
     request->send(200, "text/html", html_template);
 
-    Serial.println("[HTTP] Response: 200 OK (HTML)");
+    ESP_LOGI(TAG, "Response: 200 OK (HTML)");
 }
 
 void HTTPServerController::handleStatus(AsyncWebServerRequest *request)
@@ -904,7 +899,7 @@ void HTTPServerController::handleStatus(AsyncWebServerRequest *request)
     String responseStr;
     serializeJson(doc, responseStr);
     request->send(200, "application/json", responseStr);
-    Serial.println("[HTTP] Response: 200 OK");
+    ESP_LOGI(TAG, "Response: 200 OK");
 }
 
 void HTTPServerController::handleMoveTo(AsyncWebServerRequest *request)
@@ -918,8 +913,7 @@ void HTTPServerController::handleMoveTo(AsyncWebServerRequest *request)
         String errorMsg;
         if (!getJsonBody(request, body, errorMsg))
         {
-            Serial.print("[HTTP] Body validation error: ");
-            Serial.println(errorMsg);
+            ESP_LOGW(TAG, "Body validation error: %s", errorMsg.c_str());
             sendErrorResponse(request, 400, errorMsg);
             return;
         }
@@ -931,8 +925,7 @@ void HTTPServerController::handleMoveTo(AsyncWebServerRequest *request)
 
         if (error)
         {
-            Serial.print("[HTTP] JSON parse error: ");
-            Serial.println(error.c_str());
+            ESP_LOGW(TAG, "JSON parse error: %s", error.c_str());
             sendErrorResponse(request, 400, "Invalid JSON: " + String(error.c_str()));
             return;
         }
@@ -947,8 +940,7 @@ void HTTPServerController::handleMoveTo(AsyncWebServerRequest *request)
             return;
         }
 
-        Serial.print("[HTTP] Parsed values: position=");
-        Serial.println(req.position, 3);
+        ESP_LOGI(TAG, "Parsed values: position=%.3f", req.position);
 
         // Send command via queue
         if (commandQueue != nullptr)
@@ -969,12 +961,12 @@ void HTTPServerController::handleMoveTo(AsyncWebServerRequest *request)
                 String responseStr;
                 serializeJson(response, responseStr);
                 request->send(200, "application/json", responseStr);
-                Serial.println("[HTTP] Response: 200 OK");
+                ESP_LOGI(TAG, "Response: 200 OK");
             }
             else
             {
                 sendErrorResponse(request, 503, "Command queue full");
-                Serial.println("[HTTP] Response: 503 Service Unavailable - Queue full");
+                ESP_LOGW(TAG, "Response: 503 Service Unavailable - Queue full");
             }
         }
         else
@@ -990,13 +982,13 @@ void HTTPServerController::handleMoveTo(AsyncWebServerRequest *request)
             String responseStr;
             serializeJson(response, responseStr);
             request->send(200, "application/json", responseStr);
-            Serial.println("[HTTP] Response: 200 OK");
+            ESP_LOGI(TAG, "Response: 200 OK");
         }
     }
     else if (request->method() == HTTP_GET)
     {
         // Get current and target position (in degrees)
-        Serial.println("[HTTP] Getting current position");
+        ESP_LOGI(TAG, "Getting current position");
 
         JsonDocument response;
         response["status"] = "ok";
@@ -1006,11 +998,11 @@ void HTTPServerController::handleMoveTo(AsyncWebServerRequest *request)
         String responseStr;
         serializeJson(response, responseStr);
         request->send(200, "application/json", responseStr);
-        Serial.println("[HTTP] Response: 200 OK");
+        ESP_LOGI(TAG, "Response: 200 OK");
     }
     else
     {
-        Serial.println("[HTTP] Response: 405 Method Not Allowed");
+        ESP_LOGW(TAG, "Response: 405 Method Not Allowed");
         sendErrorResponse(request, 405, "Method not allowed");
     }
 }
@@ -1026,8 +1018,7 @@ void HTTPServerController::handleStepperEnable(AsyncWebServerRequest *request)
         String errorMsg;
         if (!getJsonBody(request, body, errorMsg))
         {
-            Serial.print("[HTTP] Body validation error: ");
-            Serial.println(errorMsg);
+            ESP_LOGW(TAG, "Body validation error: %s", errorMsg.c_str());
             sendErrorResponse(request, 400, errorMsg);
             return;
         }
@@ -1038,8 +1029,7 @@ void HTTPServerController::handleStepperEnable(AsyncWebServerRequest *request)
 
         if (error)
         {
-            Serial.print("[HTTP] JSON parse error: ");
-            Serial.println(error.c_str());
+            ESP_LOGW(TAG, "JSON parse error: %s", error.c_str());
             sendErrorResponse(request, 400, "Invalid JSON: " + String(error.c_str()));
             return;
         }
@@ -1047,8 +1037,7 @@ void HTTPServerController::handleStepperEnable(AsyncWebServerRequest *request)
         if (doc["enable"].is<bool>())
         {
             bool enable = doc["enable"].as<bool>();
-            Serial.print("[HTTP] Parsed values: enable=");
-            Serial.println(enable ? "true" : "false");
+            ESP_LOGI(TAG, "Parsed values: enable=%s", enable ? "true" : "false");
 
             // Send command via queue
             if (commandQueue != nullptr)
@@ -1069,12 +1058,12 @@ void HTTPServerController::handleStepperEnable(AsyncWebServerRequest *request)
                     String responseStr;
                     serializeJson(response, responseStr);
                     request->send(200, "application/json", responseStr);
-                    Serial.println("[HTTP] Response: 200 OK");
+                    ESP_LOGI(TAG, "Response: 200 OK");
                 }
                 else
                 {
                     sendErrorResponse(request, 503, "Command queue full");
-                    Serial.println("[HTTP] Response: 503 Service Unavailable - Queue full");
+                    ESP_LOGW(TAG, "Response: 503 Service Unavailable - Queue full");
                 }
             }
             else
@@ -1089,18 +1078,18 @@ void HTTPServerController::handleStepperEnable(AsyncWebServerRequest *request)
                 String responseStr;
                 serializeJson(response, responseStr);
                 request->send(200, "application/json", responseStr);
-                Serial.println("[HTTP] Response: 200 OK");
+                ESP_LOGI(TAG, "Response: 200 OK");
             }
         }
         else
         {
-            Serial.println("[HTTP] Response: 400 Bad Request - Missing enable parameter");
+            ESP_LOGW(TAG, "Response: 400 Bad Request - Missing enable parameter");
             sendErrorResponse(request, 400, "Missing enable parameter");
         }
     }
     else
     {
-        Serial.println("[HTTP] Response: 405 Method Not Allowed");
+        ESP_LOGW(TAG, "Response: 405 Method Not Allowed");
         sendErrorResponse(request, 405, "Method not allowed");
     }
 }
@@ -1116,8 +1105,7 @@ void HTTPServerController::handleStepperSpeed(AsyncWebServerRequest *request)
         String errorMsg;
         if (!getJsonBody(request, body, errorMsg))
         {
-            Serial.print("[HTTP] Body validation error: ");
-            Serial.println(errorMsg);
+            ESP_LOGW(TAG, "Body validation error: %s", errorMsg.c_str());
             sendErrorResponse(request, 400, errorMsg);
             return;
         }
@@ -1129,8 +1117,7 @@ void HTTPServerController::handleStepperSpeed(AsyncWebServerRequest *request)
 
         if (error)
         {
-            Serial.print("[HTTP] JSON parse error: ");
-            Serial.println(error.c_str());
+            ESP_LOGW(TAG, "JSON parse error: %s", error.c_str());
             sendErrorResponse(request, 400, "Invalid JSON: " + String(error.c_str()));
             return;
         }
@@ -1145,8 +1132,7 @@ void HTTPServerController::handleStepperSpeed(AsyncWebServerRequest *request)
             return;
         }
 
-        Serial.print("[HTTP] Parsed values: speed=");
-        Serial.println(req.speed, 3);
+        ESP_LOGI(TAG, "Parsed values: speed=%.3f", req.speed);
 
         if (req.speed > 0)
         {
@@ -1167,7 +1153,7 @@ void HTTPServerController::handleStepperSpeed(AsyncWebServerRequest *request)
             String responseStr;
             serializeJson(response, responseStr);
             request->send(200, "application/json", responseStr);
-            Serial.println("[HTTP] Response: 200 OK");
+            ESP_LOGI(TAG, "Response: 200 OK");
         }
         else
         {
@@ -1176,7 +1162,7 @@ void HTTPServerController::handleStepperSpeed(AsyncWebServerRequest *request)
     }
     else
     {
-        Serial.println("[HTTP] Response: 405 Method Not Allowed");
+        ESP_LOGW(TAG, "Response: 405 Method Not Allowed");
         sendErrorResponse(request, 405, "Method not allowed");
     }
 }
@@ -1192,8 +1178,7 @@ void HTTPServerController::handleStepperAcceleration(AsyncWebServerRequest *requ
         String errorMsg;
         if (!getJsonBody(request, body, errorMsg))
         {
-            Serial.print("[HTTP] Body validation error: ");
-            Serial.println(errorMsg);
+            ESP_LOGW(TAG, "Body validation error: %s", errorMsg.c_str());
             sendErrorResponse(request, 400, errorMsg);
             return;
         }
@@ -1205,8 +1190,7 @@ void HTTPServerController::handleStepperAcceleration(AsyncWebServerRequest *requ
 
         if (error)
         {
-            Serial.print("[HTTP] JSON parse error: ");
-            Serial.println(error.c_str());
+            ESP_LOGW(TAG, "JSON parse error: %s", error.c_str());
             sendErrorResponse(request, 400, "Invalid JSON: " + String(error.c_str()));
             return;
         }
@@ -1221,8 +1205,7 @@ void HTTPServerController::handleStepperAcceleration(AsyncWebServerRequest *requ
             return;
         }
 
-        Serial.print("[HTTP] Parsed values: accel=");
-        Serial.println(req.accel, 3);
+        ESP_LOGI(TAG, "Parsed values: accel=%.3f", req.accel);
 
         if (req.accel > 0)
         {
@@ -1243,7 +1226,7 @@ void HTTPServerController::handleStepperAcceleration(AsyncWebServerRequest *requ
             String responseStr;
             serializeJson(response, responseStr);
             request->send(200, "application/json", responseStr);
-            Serial.println("[HTTP] Response: 200 OK");
+            ESP_LOGI(TAG, "Response: 200 OK");
         }
         else
         {
@@ -1252,7 +1235,7 @@ void HTTPServerController::handleStepperAcceleration(AsyncWebServerRequest *requ
     }
     else
     {
-        Serial.println("[HTTP] Response: 405 Method Not Allowed");
+        ESP_LOGW(TAG, "Response: 405 Method Not Allowed");
         sendErrorResponse(request, 405, "Method not allowed");
     }
 }
@@ -1268,8 +1251,7 @@ void HTTPServerController::handleStepperMicrosteps(AsyncWebServerRequest *reques
         String errorMsg;
         if (!getJsonBody(request, body, errorMsg))
         {
-            Serial.print("[HTTP] Body validation error: ");
-            Serial.println(errorMsg);
+            ESP_LOGW(TAG, "Body validation error: %s", errorMsg.c_str());
             sendErrorResponse(request, 400, errorMsg);
             return;
         }
@@ -1281,8 +1263,7 @@ void HTTPServerController::handleStepperMicrosteps(AsyncWebServerRequest *reques
 
         if (error)
         {
-            Serial.print("[HTTP] JSON parse error: ");
-            Serial.println(error.c_str());
+            ESP_LOGW(TAG, "JSON parse error: %s", error.c_str());
             sendErrorResponse(request, 400, "Invalid JSON: " + String(error.c_str()));
             return;
         }
@@ -1297,14 +1278,12 @@ void HTTPServerController::handleStepperMicrosteps(AsyncWebServerRequest *reques
             return;
         }
 
-        Serial.print("[HTTP] Parsed values: microsteps=");
-        Serial.println(req.microsteps);
+        ESP_LOGI(TAG, "Parsed values: microsteps=%d", req.microsteps);
 
         int microsteps = req.microsteps;
         if (stepperController->setMicrosteps(microsteps))
         {
-            Serial.print("[HTTP] Setting microstepping to: ");
-            Serial.println(microsteps);
+            ESP_LOGI(TAG, "Setting microstepping to: %d", microsteps);
             
             // Save configuration if configManager is available
             if (configManager != nullptr)
@@ -1321,11 +1300,11 @@ void HTTPServerController::handleStepperMicrosteps(AsyncWebServerRequest *reques
             String responseStr;
             serializeJson(response, responseStr);
             request->send(200, "application/json", responseStr);
-            Serial.println("[HTTP] Response: 200 OK");
+            ESP_LOGI(TAG, "Response: 200 OK");
         }
         else
         {
-            Serial.println("[HTTP] Response: 400 Bad Request - Invalid microstepping value");
+            ESP_LOGW(TAG, "Response: 400 Bad Request - Invalid microstepping value");
             sendErrorResponse(request, 400, "Invalid microstepping value. Must be 1, 2, 4, 8, 16, 32, 64, 128, or 256");
         }
     }
@@ -1341,11 +1320,11 @@ void HTTPServerController::handleStepperMicrosteps(AsyncWebServerRequest *reques
         String responseStr;
         serializeJson(response, responseStr);
         request->send(200, "application/json", responseStr);
-        Serial.println("[HTTP] Response: 200 OK");
+        ESP_LOGI(TAG, "Response: 200 OK");
     }
     else
     {
-        Serial.println("[HTTP] Response: 405 Method Not Allowed");
+        ESP_LOGW(TAG, "Response: 405 Method Not Allowed");
         sendErrorResponse(request, 405, "Method not allowed");
     }
 }
@@ -1361,8 +1340,7 @@ void HTTPServerController::handleStepperGearRatio(AsyncWebServerRequest *request
         String errorMsg;
         if (!getJsonBody(request, body, errorMsg))
         {
-            Serial.print("[HTTP] Body validation error: ");
-            Serial.println(errorMsg);
+            ESP_LOGW(TAG, "Body validation error: %s", errorMsg.c_str());
             sendErrorResponse(request, 400, errorMsg);
             return;
         }
@@ -1374,8 +1352,7 @@ void HTTPServerController::handleStepperGearRatio(AsyncWebServerRequest *request
 
         if (error)
         {
-            Serial.print("[HTTP] JSON parse error: ");
-            Serial.println(error.c_str());
+            ESP_LOGW(TAG, "JSON parse error: %s", error.c_str());
             sendErrorResponse(request, 400, "Invalid JSON: " + String(error.c_str()));
             return;
         }
@@ -1390,16 +1367,13 @@ void HTTPServerController::handleStepperGearRatio(AsyncWebServerRequest *request
             return;
         }
 
-        Serial.print("[HTTP] Parsed values: ratio=");
-        Serial.println(req.ratio, 3);
+        ESP_LOGI(TAG, "Parsed values: ratio=%.3f", req.ratio);
 
         float ratio = req.ratio;
         if (ratio > 0.0f && ratio <= 100.0f)
         {
             stepperController->setGearRatio(ratio);
-            Serial.print("[HTTP] Setting gear ratio to: ");
-            Serial.print(ratio, 2);
-            Serial.println(":1 (stepper:turntable)");
+            ESP_LOGI(TAG, "Setting gear ratio to: %.2f:1 (stepper:turntable)", ratio);
             
             // Save configuration if configManager is available
             if (configManager != nullptr)
@@ -1416,11 +1390,11 @@ void HTTPServerController::handleStepperGearRatio(AsyncWebServerRequest *request
             String responseStr;
             serializeJson(response, responseStr);
             request->send(200, "application/json", responseStr);
-            Serial.println("[HTTP] Response: 200 OK");
+            ESP_LOGI(TAG, "Response: 200 OK");
         }
         else
         {
-            Serial.println("[HTTP] Response: 400 Bad Request - Invalid gear ratio value");
+            ESP_LOGW(TAG, "Response: 400 Bad Request - Invalid gear ratio value");
             sendErrorResponse(request, 400, "Invalid gear ratio value. Must be between 0.1 and 100.0");
         }
     }
@@ -1436,11 +1410,11 @@ void HTTPServerController::handleStepperGearRatio(AsyncWebServerRequest *request
         String responseStr;
         serializeJson(response, responseStr);
         request->send(200, "application/json", responseStr);
-        Serial.println("[HTTP] Response: 200 OK");
+        ESP_LOGI(TAG, "Response: 200 OK");
     }
     else
     {
-        Serial.println("[HTTP] Response: 405 Method Not Allowed");
+        ESP_LOGW(TAG, "Response: 405 Method Not Allowed");
         sendErrorResponse(request, 405, "Method not allowed");
     }
 }
@@ -1456,8 +1430,7 @@ void HTTPServerController::handleStepperSpeedHz(AsyncWebServerRequest *request)
         String errorMsg;
         if (!getJsonBody(request, body, errorMsg))
         {
-            Serial.print("[HTTP] Body validation error: ");
-            Serial.println(errorMsg);
+            ESP_LOGW(TAG, "Body validation error: %s", errorMsg.c_str());
             sendErrorResponse(request, 400, errorMsg);
             return;
         }
@@ -1469,8 +1442,7 @@ void HTTPServerController::handleStepperSpeedHz(AsyncWebServerRequest *request)
 
         if (error)
         {
-            Serial.print("[HTTP] JSON parse error: ");
-            Serial.println(error.c_str());
+            ESP_LOGW(TAG, "JSON parse error: %s", error.c_str());
             sendErrorResponse(request, 400, "Invalid JSON: " + String(error.c_str()));
             return;
         }
@@ -1485,8 +1457,7 @@ void HTTPServerController::handleStepperSpeedHz(AsyncWebServerRequest *request)
             return;
         }
 
-        Serial.print("[HTTP] Parsed values: speedHz=");
-        Serial.println(req.speedHz, 3);
+        ESP_LOGI(TAG, "Parsed values: speedHz=%.3f", req.speedHz);
 
         if (req.speedHz < 0)
         {
@@ -1505,7 +1476,7 @@ void HTTPServerController::handleStepperSpeedHz(AsyncWebServerRequest *request)
         String responseStr;
         serializeJson(response, responseStr);
         request->send(200, "application/json", responseStr);
-        Serial.println("[HTTP] Response: 200 OK");
+        ESP_LOGI(TAG, "Response: 200 OK");
     }
     else if (request->method() == HTTP_GET)
     {
@@ -1519,11 +1490,11 @@ void HTTPServerController::handleStepperSpeedHz(AsyncWebServerRequest *request)
         String responseStr;
         serializeJson(response, responseStr);
         request->send(200, "application/json", responseStr);
-        Serial.println("[HTTP] Response: 200 OK");
+        ESP_LOGI(TAG, "Response: 200 OK");
     }
     else
     {
-        Serial.println("[HTTP] Response: 405 Method Not Allowed");
+        ESP_LOGW(TAG, "Response: 405 Method Not Allowed");
         sendErrorResponse(request, 405, "Method not allowed");
     }
 }
@@ -1534,7 +1505,7 @@ void HTTPServerController::handleStepperRunForward(AsyncWebServerRequest *reques
 
     if (request->method() == HTTP_POST)
     {
-        Serial.println("[HTTP] Starting forward rotation");
+        ESP_LOGI(TAG, "Starting forward rotation");
 
         // Direct call (immediate execution)
         stepperController->runForward();
@@ -1548,11 +1519,11 @@ void HTTPServerController::handleStepperRunForward(AsyncWebServerRequest *reques
         String responseStr;
         serializeJson(response, responseStr);
         request->send(200, "application/json", responseStr);
-        Serial.println("[HTTP] Response: 200 OK");
+        ESP_LOGI(TAG, "Response: 200 OK");
     }
     else
     {
-        Serial.println("[HTTP] Response: 405 Method Not Allowed");
+        ESP_LOGW(TAG, "Response: 405 Method Not Allowed");
         sendErrorResponse(request, 405, "Method not allowed");
     }
 }
@@ -1563,7 +1534,7 @@ void HTTPServerController::handleStepperRunBackward(AsyncWebServerRequest *reque
 
     if (request->method() == HTTP_POST)
     {
-        Serial.println("[HTTP] Starting backward rotation");
+        ESP_LOGI(TAG, "Starting backward rotation");
 
         // Direct call (immediate execution)
         stepperController->runBackward();
@@ -1577,11 +1548,11 @@ void HTTPServerController::handleStepperRunBackward(AsyncWebServerRequest *reque
         String responseStr;
         serializeJson(response, responseStr);
         request->send(200, "application/json", responseStr);
-        Serial.println("[HTTP] Response: 200 OK");
+        ESP_LOGI(TAG, "Response: 200 OK");
     }
     else
     {
-        Serial.println("[HTTP] Response: 405 Method Not Allowed");
+        ESP_LOGW(TAG, "Response: 405 Method Not Allowed");
         sendErrorResponse(request, 405, "Method not allowed");
     }
 }
@@ -1601,11 +1572,11 @@ void HTTPServerController::handleStepperStopMove(AsyncWebServerRequest *request)
         String responseStr;
         serializeJson(response, responseStr);
         request->send(200, "application/json", responseStr);
-        Serial.println("[HTTP] Response: 200 OK");
+        ESP_LOGI(TAG, "Response: 200 OK");
     }
     else
     {
-        Serial.println("[HTTP] Response: 405 Method Not Allowed");
+        ESP_LOGW(TAG, "Response: 405 Method Not Allowed");
         sendErrorResponse(request, 405, "Method not allowed");
     }
 }
@@ -1625,11 +1596,11 @@ void HTTPServerController::handleStepperForceStop(AsyncWebServerRequest *request
         String responseStr;
         serializeJson(response, responseStr);
         request->send(200, "application/json", responseStr);
-        Serial.println("[HTTP] Response: 200 OK");
+        ESP_LOGI(TAG, "Response: 200 OK");
     }
     else
     {
-        Serial.println("[HTTP] Response: 405 Method Not Allowed");
+        ESP_LOGW(TAG, "Response: 405 Method Not Allowed");
         sendErrorResponse(request, 405, "Method not allowed");
     }
 }
@@ -1640,7 +1611,7 @@ void HTTPServerController::handleStepperReset(AsyncWebServerRequest *request)
 
     if (request->method() == HTTP_POST)
     {
-        Serial.println("[HTTP] Resetting FastAccelStepper engine...");
+        ESP_LOGI(TAG, "Resetting FastAccelStepper engine...");
 
         // Call resetEngine directly (immediate execution, no queue needed)
         bool success = stepperController->resetEngine();
@@ -1653,7 +1624,7 @@ void HTTPServerController::handleStepperReset(AsyncWebServerRequest *request)
             String responseStr;
             serializeJson(response, responseStr);
             request->send(200, "application/json", responseStr);
-            Serial.println("[HTTP] Response: 200 OK - Engine reset");
+            ESP_LOGI(TAG, "Response: 200 OK - Engine reset");
         }
         else
         {
@@ -1662,12 +1633,12 @@ void HTTPServerController::handleStepperReset(AsyncWebServerRequest *request)
             String responseStr;
             serializeJson(response, responseStr);
             request->send(500, "application/json", responseStr);
-            Serial.println("[HTTP] Response: 500 Internal Server Error - Reset failed");
+            ESP_LOGE(TAG, "Response: 500 Internal Server Error - Reset failed");
         }
     }
     else
     {
-        Serial.println("[HTTP] Response: 405 Method Not Allowed");
+        ESP_LOGW(TAG, "Response: 405 Method Not Allowed");
         sendErrorResponse(request, 405, "Method not allowed");
     }
 }
@@ -1688,11 +1659,11 @@ void HTTPServerController::handleStepperStatus(AsyncWebServerRequest *request)
 
         if (fullStatus)
         {
-            Serial.println("[HTTP] Getting full stepper status (with TMC2209)");
+            ESP_LOGD(TAG, "Getting full stepper status (with TMC2209)");
         }
         else
         {
-            Serial.println("[HTTP] Getting basic stepper status (no TMC2209)");
+            ESP_LOGD(TAG, "Getting basic stepper status (no TMC2209)");
         }
 
         JsonDocument doc;
@@ -1749,11 +1720,11 @@ void HTTPServerController::handleStepperStatus(AsyncWebServerRequest *request)
         String responseStr;
         serializeJson(doc, responseStr);
         request->send(200, "application/json", responseStr);
-        Serial.println("[HTTP] Response: 200 OK");
+        ESP_LOGI(TAG, "Response: 200 OK");
     }
     else
     {
-        Serial.println("[HTTP] Response: 405 Method Not Allowed");
+        ESP_LOGW(TAG, "Response: 405 Method Not Allowed");
         sendErrorResponse(request, 405, "Method not allowed");
     }
 }
@@ -1764,7 +1735,7 @@ void HTTPServerController::handleStepperTurntablePosition(AsyncWebServerRequest 
 
     if (request->method() == HTTP_GET)
     {
-        Serial.println("[HTTP] Getting turntable position");
+        ESP_LOGD(TAG, "Getting turntable position");
 
         JsonDocument doc;
         doc["status"] = "ok";
@@ -1774,11 +1745,11 @@ void HTTPServerController::handleStepperTurntablePosition(AsyncWebServerRequest 
         String responseStr;
         serializeJson(doc, responseStr);
         request->send(200, "application/json", responseStr);
-        Serial.println("[HTTP] Response: 200 OK");
+        ESP_LOGI(TAG, "Response: 200 OK");
     }
     else
     {
-        Serial.println("[HTTP] Response: 405 Method Not Allowed");
+        ESP_LOGW(TAG, "Response: 405 Method Not Allowed");
         sendErrorResponse(request, 405, "Method not allowed");
     }
 }
@@ -1789,7 +1760,7 @@ void HTTPServerController::handleStepperPositionStatus(AsyncWebServerRequest *re
 
     if (request->method() == HTTP_GET)
     {
-        Serial.println("[HTTP] Getting position status");
+        ESP_LOGD(TAG, "Getting position status");
 
         JsonDocument doc;
         doc["status"] = "ok";
@@ -1799,11 +1770,11 @@ void HTTPServerController::handleStepperPositionStatus(AsyncWebServerRequest *re
         String responseStr;
         serializeJson(doc, responseStr);
         request->send(200, "application/json", responseStr);
-        Serial.println("[HTTP] Response: 200 OK");
+        ESP_LOGI(TAG, "Response: 200 OK");
     }
     else
     {
-        Serial.println("[HTTP] Response: 405 Method Not Allowed");
+        ESP_LOGW(TAG, "Response: 405 Method Not Allowed");
         sendErrorResponse(request, 405, "Method not allowed");
     }
 }
@@ -1815,7 +1786,7 @@ void HTTPServerController::handleStepperHeading(AsyncWebServerRequest *request)
     if (request->method() == HTTP_GET)
     {
         // Return current heading
-        Serial.println("[HTTP] Getting current heading");
+        ESP_LOGD(TAG, "Getting current heading");
 
         // Get current heading from stepper position
         float currentHeading = stepperController->getStepperPositionDegrees();
@@ -1837,7 +1808,7 @@ void HTTPServerController::handleStepperHeading(AsyncWebServerRequest *request)
         String responseStr;
         serializeJson(response, responseStr);
         request->send(200, "application/json", responseStr);
-        Serial.println("[HTTP] Response: 200 OK");
+        ESP_LOGI(TAG, "Response: 200 OK");
     }
     else if (request->method() == HTTP_POST)
     {
@@ -1846,8 +1817,7 @@ void HTTPServerController::handleStepperHeading(AsyncWebServerRequest *request)
         String errorMsg;
         if (!getJsonBody(request, body, errorMsg))
         {
-            Serial.print("[HTTP] Body validation error: ");
-            Serial.println(errorMsg);
+            ESP_LOGW(TAG, "Body validation error: %s", errorMsg.c_str());
             sendErrorResponse(request, 400, errorMsg);
             return;
         }
@@ -1859,8 +1829,7 @@ void HTTPServerController::handleStepperHeading(AsyncWebServerRequest *request)
 
         if (error)
         {
-            Serial.print("[HTTP] JSON parse error: ");
-            Serial.println(error.c_str());
+            ESP_LOGW(TAG, "JSON parse error: %s", error.c_str());
             sendErrorResponse(request, 400, "Invalid JSON: " + String(error.c_str()));
             return;
         }
@@ -1876,8 +1845,7 @@ void HTTPServerController::handleStepperHeading(AsyncWebServerRequest *request)
             return;
         }
 
-        Serial.print("[HTTP] Parsed values: heading=");
-        Serial.println(req.heading);
+        ESP_LOGI(TAG, "Parsed values: heading=%.2f", req.heading);
 
         // Move to heading using shortest path
         bool success = stepperController->moveToHeadingDegrees(req.heading);
@@ -1900,11 +1868,11 @@ void HTTPServerController::handleStepperHeading(AsyncWebServerRequest *request)
         String responseStr;
         serializeJson(response, responseStr);
         request->send(200, "application/json", responseStr);
-        Serial.println("[HTTP] Response: 200 OK");
+        ESP_LOGI(TAG, "Response: 200 OK");
     }
     else
     {
-        Serial.println("[HTTP] Response: 405 Method Not Allowed");
+        ESP_LOGW(TAG, "Response: 405 Method Not Allowed");
         sendErrorResponse(request, 405, "Method not allowed");
     }
 }
@@ -1915,7 +1883,7 @@ void HTTPServerController::handleStepperBehavior(AsyncWebServerRequest *request)
 
     if (request->method() == HTTP_GET)
     {
-        Serial.println("[HTTP] Getting available behaviors");
+        ESP_LOGI(TAG, "Getting available behaviors");
 
         JsonDocument doc;
         doc["status"] = "ok";
@@ -1943,18 +1911,17 @@ void HTTPServerController::handleStepperBehavior(AsyncWebServerRequest *request)
         String responseStr;
         serializeJson(doc, responseStr);
         request->send(200, "application/json", responseStr);
-        Serial.println("[HTTP] Response: 200 OK");
+        ESP_LOGI(TAG, "Response: 200 OK");
     }
     else if (request->method() == HTTP_POST)
     {
-        Serial.println("[HTTP] Starting behavior");
+        ESP_LOGI(TAG, "Starting behavior");
 
         String body;
         String errorMsg;
         if (!getJsonBody(request, body, errorMsg))
         {
-            Serial.print("[HTTP] Body validation error: ");
-            Serial.println(errorMsg);
+            ESP_LOGW(TAG, "Body validation error: %s", errorMsg.c_str());
             sendErrorResponse(request, 400, errorMsg);
             return;
         }
@@ -1963,8 +1930,7 @@ void HTTPServerController::handleStepperBehavior(AsyncWebServerRequest *request)
         DeserializationError error = deserializeJson(doc, body);
         if (error)
         {
-            Serial.print("[HTTP] JSON parse error: ");
-            Serial.println(error.c_str());
+            ESP_LOGW(TAG, "JSON parse error: %s", error.c_str());
             sendErrorResponse(request, 400, "Invalid JSON: " + String(error.c_str()));
             return;
         }
@@ -2020,11 +1986,11 @@ void HTTPServerController::handleStepperBehavior(AsyncWebServerRequest *request)
         String responseStr;
         serializeJson(response, responseStr);
         request->send(200, "application/json", responseStr);
-        Serial.println("[HTTP] Response: 200 OK");
+        ESP_LOGI(TAG, "Response: 200 OK");
     }
     else
     {
-        Serial.println("[HTTP] Response: 405 Method Not Allowed");
+        ESP_LOGW(TAG, "Response: 405 Method Not Allowed");
         sendErrorResponse(request, 405, "Method not allowed");
     }
 }
@@ -2035,7 +2001,7 @@ void HTTPServerController::handleStepperStopBehavior(AsyncWebServerRequest *requ
 
     if (request->method() == HTTP_POST)
     {
-        Serial.println("[HTTP] Stopping behavior");
+        ESP_LOGI(TAG, "Stopping behavior");
 
         bool success = stepperController->stopBehavior();
 
@@ -2046,11 +2012,15 @@ void HTTPServerController::handleStepperStopBehavior(AsyncWebServerRequest *requ
         String responseStr;
         serializeJson(response, responseStr);
         request->send(success ? 200 : 400, "application/json", responseStr);
-        Serial.println(success ? "[HTTP] Response: 200 OK" : "[HTTP] Response: 400 Bad Request");
+        if (success) {
+            ESP_LOGI(TAG, "Response: 200 OK");
+        } else {
+            ESP_LOGW(TAG, "Response: 400 Bad Request");
+        }
     }
     else
     {
-        Serial.println("[HTTP] Response: 405 Method Not Allowed");
+        ESP_LOGW(TAG, "Response: 405 Method Not Allowed");
         sendErrorResponse(request, 405, "Method not allowed");
     }
 }
@@ -2063,7 +2033,7 @@ void HTTPServerController::handleStepperDance(AsyncWebServerRequest *request)
     if (request->method() == HTTP_GET)
     {
         // Return list of available dance types
-        Serial.println("[HTTP] Getting available dance types");
+        ESP_LOGI(TAG, "Getting available dance types");
 
         JsonDocument doc;
         doc["status"] = "ok";
@@ -2103,7 +2073,7 @@ void HTTPServerController::handleStepperDance(AsyncWebServerRequest *request)
         String responseStr;
         serializeJson(doc, responseStr);
         request->send(200, "application/json", responseStr);
-        Serial.println("[HTTP] Response: 200 OK");
+        ESP_LOGI(TAG, "Response: 200 OK");
     }
     else if (request->method() == HTTP_POST)
     {
@@ -2112,8 +2082,7 @@ void HTTPServerController::handleStepperDance(AsyncWebServerRequest *request)
         String errorMsg;
         if (!getJsonBody(request, body, errorMsg))
         {
-            Serial.print("[HTTP] Body validation error: ");
-            Serial.println(errorMsg);
+            ESP_LOGW(TAG, "Body validation error: %s", errorMsg.c_str());
             sendErrorResponse(request, 400, errorMsg);
             return;
         }
@@ -2125,8 +2094,7 @@ void HTTPServerController::handleStepperDance(AsyncWebServerRequest *request)
 
         if (error)
         {
-            Serial.print("[HTTP] JSON parse error: ");
-            Serial.println(error.c_str());
+            ESP_LOGW(TAG, "JSON parse error: %s", error.c_str());
             sendErrorResponse(request, 400, "Invalid JSON: " + String(error.c_str()));
             return;
         }
@@ -2142,8 +2110,7 @@ void HTTPServerController::handleStepperDance(AsyncWebServerRequest *request)
             return;
         }
 
-        Serial.print("[HTTP] Parsed values: danceType=");
-        Serial.println(req.danceType);
+        ESP_LOGI(TAG, "Parsed values: danceType=%s", req.danceType.c_str());
 
         // Convert string to DanceType enum
         StepperMotorController::DanceType danceType;
@@ -2192,11 +2159,15 @@ void HTTPServerController::handleStepperDance(AsyncWebServerRequest *request)
         String responseStr;
         serializeJson(response, responseStr);
         request->send(success ? 200 : 500, "application/json", responseStr);
-        Serial.println(success ? "[HTTP] Response: 200 OK - Dance started" : "[HTTP] Response: 500 Internal Server Error");
+        if (success) {
+            ESP_LOGI(TAG, "Response: 200 OK - Dance started");
+        } else {
+            ESP_LOGE(TAG, "Response: 500 Internal Server Error");
+        }
     }
     else
     {
-        Serial.println("[HTTP] Response: 405 Method Not Allowed");
+        ESP_LOGW(TAG, "Response: 405 Method Not Allowed");
         sendErrorResponse(request, 405, "Method not allowed");
     }
 }
@@ -2207,7 +2178,7 @@ void HTTPServerController::handleStepperStopDance(AsyncWebServerRequest *request
 
     if (request->method() == HTTP_POST)
     {
-        Serial.println("[HTTP] Stopping dance");
+        ESP_LOGI(TAG, "Stopping dance");
 
         // Stop the dance
         bool success = stepperController->stopDance();
@@ -2219,11 +2190,15 @@ void HTTPServerController::handleStepperStopDance(AsyncWebServerRequest *request
         String responseStr;
         serializeJson(response, responseStr);
         request->send(success ? 200 : 400, "application/json", responseStr);
-        Serial.println(success ? "[HTTP] Response: 200 OK" : "[HTTP] Response: 400 Bad Request");
+        if (success) {
+            ESP_LOGI(TAG, "Response: 200 OK");
+        } else {
+            ESP_LOGW(TAG, "Response: 400 Bad Request");
+        }
     }
     else
     {
-        Serial.println("[HTTP] Response: 405 Method Not Allowed");
+        ESP_LOGW(TAG, "Response: 405 Method Not Allowed");
         sendErrorResponse(request, 405, "Method not allowed");
     }
 }
@@ -2234,7 +2209,7 @@ void HTTPServerController::handleStepperRunning(AsyncWebServerRequest *request)
 
     if (request->method() == HTTP_GET)
     {
-        Serial.println("[HTTP] Getting stepper running status");
+        ESP_LOGD(TAG, "Getting stepper running status");
 
         JsonDocument doc;
         doc["status"] = "ok";
@@ -2243,11 +2218,11 @@ void HTTPServerController::handleStepperRunning(AsyncWebServerRequest *request)
         String responseStr;
         serializeJson(doc, responseStr);
         request->send(200, "application/json", responseStr);
-        Serial.println("[HTTP] Response: 200 OK");
+        ESP_LOGI(TAG, "Response: 200 OK");
     }
     else
     {
-        Serial.println("[HTTP] Response: 405 Method Not Allowed");
+        ESP_LOGW(TAG, "Response: 405 Method Not Allowed");
         sendErrorResponse(request, 405, "Method not allowed");
     }
 }
@@ -2283,7 +2258,7 @@ void HTTPServerController::handleMqttConfig(AsyncWebServerRequest *request)
         String responseStr;
         serializeJson(response, responseStr);
         request->send(200, "application/json", responseStr);
-        Serial.println("[HTTP] Response: 200 OK - MQTT config returned");
+        ESP_LOGI(TAG, "Response: 200 OK - MQTT config returned");
     }
     else if (request->method() == HTTP_POST)
     {
@@ -2299,8 +2274,7 @@ void HTTPServerController::handleMqttConfig(AsyncWebServerRequest *request)
         String errorMsg;
         if (!getJsonBody(request, body, errorMsg))
         {
-            Serial.print("[HTTP] Body validation error: ");
-            Serial.println(errorMsg);
+            ESP_LOGW(TAG, "Body validation error: %s", errorMsg.c_str());
             sendErrorResponse(request, 400, errorMsg);
             return;
         }
@@ -2311,8 +2285,7 @@ void HTTPServerController::handleMqttConfig(AsyncWebServerRequest *request)
 
         if (error)
         {
-            Serial.print("[HTTP] JSON parse error: ");
-            Serial.println(error.c_str());
+            ESP_LOGW(TAG, "JSON parse error: %s", error.c_str());
             sendErrorResponse(request, 400, "Invalid JSON: " + String(error.c_str()));
             return;
         }
@@ -2382,7 +2355,7 @@ void HTTPServerController::handleMqttConfig(AsyncWebServerRequest *request)
                     const SystemConfig& savedConfig = configManager->getConfig();
                     if (savedConfig.mqttEnabled)
                     {
-                        Serial.println("[HTTP] Restarting MQTT with new configuration...");
+                        ESP_LOGI(TAG, "Restarting MQTT with new configuration...");
                         mqttController->restart();
                     }
                     else
@@ -2390,7 +2363,7 @@ void HTTPServerController::handleMqttConfig(AsyncWebServerRequest *request)
                         // If MQTT was disabled, disconnect if currently connected
                         if (mqttController->isConnected())
                         {
-                            Serial.println("[HTTP] MQTT disabled - disconnecting...");
+                            ESP_LOGI(TAG, "MQTT disabled - disconnecting...");
                             // MQTTController doesn't have a public disconnect, but restart will handle it
                         }
                     }
@@ -2403,7 +2376,7 @@ void HTTPServerController::handleMqttConfig(AsyncWebServerRequest *request)
                 String responseStr;
                 serializeJson(response, responseStr);
                 request->send(200, "application/json", responseStr);
-                Serial.println("[HTTP] Response: 200 OK - MQTT config saved");
+                ESP_LOGI(TAG, "Response: 200 OK - MQTT config saved");
             }
             else
             {
@@ -2419,12 +2392,12 @@ void HTTPServerController::handleMqttConfig(AsyncWebServerRequest *request)
             String responseStr;
             serializeJson(response, responseStr);
             request->send(200, "application/json", responseStr);
-            Serial.println("[HTTP] Response: 200 OK - No changes");
+            ESP_LOGI(TAG, "Response: 200 OK - No changes");
         }
     }
     else
     {
-        Serial.println("[HTTP] Response: 405 Method Not Allowed");
+        ESP_LOGW(TAG, "Response: 405 Method Not Allowed");
         sendErrorResponse(request, 405, "Method not allowed");
     }
 }
@@ -2459,7 +2432,7 @@ void HTTPServerController::handleMotorConfig(AsyncWebServerRequest *request)
         String responseStr;
         serializeJson(response, responseStr);
         request->send(200, "application/json", responseStr);
-        Serial.println("[HTTP] Response: 200 OK - Motor config returned");
+        ESP_LOGI(TAG, "Response: 200 OK - Motor config returned");
     }
     else if (request->method() == HTTP_POST)
     {
@@ -2592,7 +2565,7 @@ void HTTPServerController::handleMotorConfig(AsyncWebServerRequest *request)
         String responseStr;
         serializeJson(response, responseStr);
         request->send(200, "application/json", responseStr);
-        Serial.println("[HTTP] Response: 200 OK - Motor config");
+        ESP_LOGI(TAG, "Response: 200 OK - Motor config");
     }
     else
     {
@@ -2602,13 +2575,10 @@ void HTTPServerController::handleMotorConfig(AsyncWebServerRequest *request)
 
 void HTTPServerController::handleNotFound(AsyncWebServerRequest *request)
 {
-    Serial.print("[HTTP] 404 Not Found - ");
-    Serial.print(request->method() == HTTP_GET ? "GET" : request->method() == HTTP_POST ? "POST"
-                                                                                        : "UNKNOWN");
-    Serial.print(" ");
-    Serial.print(request->url());
-    Serial.print(" from ");
-    Serial.println(request->client()->remoteIP());
+    ESP_LOGW(TAG, "404 Not Found - %s %s from %s",
+             request->method() == HTTP_GET ? "GET" : request->method() == HTTP_POST ? "POST" : "UNKNOWN",
+             request->url().c_str(),
+             request->client()->remoteIP().toString().c_str());
     sendErrorResponse(request, 404, "Not found");
 }
 
@@ -2721,7 +2691,7 @@ bool HTTPServerController::begin(StepperMotorController *stepperCtrl, MotorComma
 
     // Start server (AsyncWebServer starts automatically)
     server->begin();
-    Serial.println("HTTP server started");
+    ESP_LOGI(TAG, "HTTP server started");
 
     return true;
 }
@@ -2747,41 +2717,19 @@ void HTTPServerController::printEndpoints() const
         return;
     }
 
-    Serial.println("\nHTTP API Endpoints:");
-    Serial.print("  http://");
-    Serial.print(getIPAddress());
-    Serial.println("/ - Web interface");
-    Serial.print("  GET http://");
-    Serial.print(getIPAddress());
-    Serial.println("/status");
-
-    Serial.println("\nStepper Motor Endpoints:");
-    Serial.print("  POST http://");
-    Serial.print(getIPAddress());
-    Serial.println("/stepper/position?position=90.0");
-    Serial.print("  GET http://");
-    Serial.print(getIPAddress());
-    Serial.println("/stepper/position");
-    Serial.print("  GET http://");
-    Serial.print(getIPAddress());
-    Serial.println("/stepper/position");
-    Serial.print("  POST http://");
-    Serial.print(getIPAddress());
-    Serial.println("/stepper/zero");
-    Serial.print("  POST http://");
-    Serial.print(getIPAddress());
-    Serial.println("/stepper/enable?enable=1");
-    Serial.print("  POST http://");
-    Serial.print(getIPAddress());
-    Serial.println("/stepper/speed?speed=1000");
-    Serial.print("  GET http://");
-    Serial.print(getIPAddress());
-    Serial.println("/stepper/status");
-    Serial.println("\nConfiguration:");
-    Serial.print("  GET/POST http://");
-    Serial.print(getIPAddress());
-    Serial.println("/motor/config - Motor & TMC settings (JSON)");
-    Serial.print("  GET/POST http://");
-    Serial.print(getIPAddress());
-    Serial.println("/mqtt/config - MQTT settings (JSON)");
+    String ip = getIPAddress();
+    ESP_LOGI(TAG, "HTTP API Endpoints:");
+    ESP_LOGI(TAG, "  http://%s/ - Web interface", ip.c_str());
+    ESP_LOGI(TAG, "  GET http://%s/status", ip.c_str());
+    ESP_LOGI(TAG, "Stepper Motor Endpoints:");
+    ESP_LOGI(TAG, "  POST http://%s/stepper/position?position=90.0", ip.c_str());
+    ESP_LOGI(TAG, "  GET http://%s/stepper/position", ip.c_str());
+    ESP_LOGI(TAG, "  GET http://%s/stepper/position", ip.c_str());
+    ESP_LOGI(TAG, "  POST http://%s/stepper/zero", ip.c_str());
+    ESP_LOGI(TAG, "  POST http://%s/stepper/enable?enable=1", ip.c_str());
+    ESP_LOGI(TAG, "  POST http://%s/stepper/speed?speed=1000", ip.c_str());
+    ESP_LOGI(TAG, "  GET http://%s/stepper/status", ip.c_str());
+    ESP_LOGI(TAG, "Configuration:");
+    ESP_LOGI(TAG, "  GET/POST http://%s/motor/config - Motor & TMC settings (JSON)", ip.c_str());
+    ESP_LOGI(TAG, "  GET/POST http://%s/mqtt/config - MQTT settings (JSON)", ip.c_str());
 }
