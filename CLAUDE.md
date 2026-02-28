@@ -63,7 +63,7 @@ All diagnostic output uses `ESP_LOGx(TAG, format, ...)`. Never `Serial.print` fo
 static const char* TAG = "MyTag";
 ```
 
-**IMPORTANT:** Always include `"RuntimeLog.h"`, NOT `<esp_log.h>`. Arduino-ESP32 redefines `ESP_LOGx` as direct `log_printf` calls with no runtime level check. `RuntimeLog.h` re-overrides them to check the global `runtimeLogLevel` variable, enabling the `log` serial command. The `USE_ESP_IDF_LOG` build flag would fix this properly but breaks third-party libraries that use `log_e()` without defining `TAG`.
+**IMPORTANT:** Always include `"RuntimeLog.h"`, NOT `<esp_log.h>`. `RuntimeLog.h` re-defines `ESP_LOGx` to use `log_printf()` directly with a runtime level check against the global `runtimeLogLevel` variable. This decouples project logging from `CORE_DEBUG_LEVEL`, so our code has full runtime control regardless of the compile-time setting. `CORE_DEBUG_LEVEL=2` (WARN) in `platformio.ini` silences third-party library `log_i()`/`log_d()` output at compile time (e.g., AsyncMqttClient publish spam). The `USE_ESP_IDF_LOG` build flag would fix this properly but breaks third-party libraries that use `log_e()` without defining `TAG`.
 
 | Level | Macro | Use for |
 |-------|-------|---------|
