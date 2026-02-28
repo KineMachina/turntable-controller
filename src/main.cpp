@@ -73,6 +73,7 @@ void oledDisplayTask(void *parameter);
 void setup()
 {
     Serial.begin(115200);
+    Serial.setTxBufferSize(1024);
     delay(1000);
 
     // Note: Task watchdog timeout is configured via build flag CONFIG_ESP_TASK_WDT_TIMEOUT_S=120
@@ -393,6 +394,7 @@ void serialCommandTask(void *parameter)
                 {
                     Serial.println("WiFi: Disconnected");
                 }
+                Serial.flush();
                 Serial.printf("Position: %.2f deg (%ld steps)  Heading: %.2f deg\n",
                     stepperController.getStepperPositionDegrees(),
                     stepperController.getStepperPosition(),
@@ -413,6 +415,7 @@ void serialCommandTask(void *parameter)
                         cfg.mqttDeviceId);
                 }
                 Serial.println("========================================");
+                Serial.flush();
             }
             else if (strcmp(cmdBuffer, "statusfull") == 0)
             {
@@ -420,6 +423,7 @@ void serialCommandTask(void *parameter)
                 Serial.println("Full System Status");
                 Serial.println("========================================");
                 Serial.printf("Free Heap: %u bytes | Uptime: %lu ms\n", ESP.getFreeHeap(), millis());
+                Serial.flush();
 
                 // WiFi
                 if (httpServer != nullptr && httpServer->isConnected())
@@ -434,6 +438,7 @@ void serialCommandTask(void *parameter)
                 {
                     Serial.println("WiFi: Disconnected");
                 }
+                Serial.flush();
 
                 // Motor
                 Serial.printf("Position: %.2f deg (%ld steps)\n",
@@ -444,19 +449,23 @@ void serialCommandTask(void *parameter)
                     stepperController.isRunning() ? "Yes" : "No",
                     stepperController.getMicrosteps(),
                     stepperController.getGearRatio());
+                Serial.flush();
 
                 // TMC2209
                 Serial.printf("TMC RMS Current: %u mA  Actual: %.2f mA\n",
                     stepperController.getTmcRmsCurrent(), stepperController.getTmcActualCurrent());
+                Serial.flush();
                 vTaskDelay(pdMS_TO_TICKS(10));
                 Serial.printf("TMC IRUN: %u  IHOLD: %u  CS Actual: %u\n",
                     stepperController.getTmcIrun(), stepperController.getTmcIhold(),
                     stepperController.getTmcCsActual());
+                Serial.flush();
                 vTaskDelay(pdMS_TO_TICKS(10));
                 Serial.printf("TMC Mode: %s  PWM Autoscale: %s  Blank Time: %u\n",
                     stepperController.getTmcSpreadCycle() ? "SpreadCycle" : "StealthChop",
                     stepperController.getTmcPwmAutoscale() ? "On" : "Off",
                     stepperController.getTmcBlankTime());
+                Serial.flush();
                 vTaskDelay(pdMS_TO_TICKS(10));
 
                 // Dance/Behavior
@@ -477,6 +486,7 @@ void serialCommandTask(void *parameter)
                 Serial.printf("Motor Queue: %u  Serial Queue: %u\n",
                     motorCommandQueue.getCount(), serialCommandQueue.getCount());
                 Serial.println("========================================");
+                Serial.flush();
             }
             // --- Motion commands ---
             else if (strncmp(cmdBuffer, "position ", 9) == 0)
@@ -821,6 +831,7 @@ void serialCommandTask(void *parameter)
                 Serial.println("  backward         Continuous backward rotation");
                 Serial.println("  stop             Stop (decelerate)");
                 Serial.println("  forcestop        Emergency stop + disable");
+                Serial.flush();
                 Serial.println("=== Config ===");
                 Serial.println("  speed <sps>      Max speed (steps/sec)");
                 Serial.println("  accel <sps2>     Acceleration (steps/sec^2)");
@@ -828,6 +839,7 @@ void serialCommandTask(void *parameter)
                 Serial.println("  gearratio <r>    Gear ratio (0.1-100.0)");
                 Serial.println("  speedhz <hz>     Velocity mode speed (Hz)");
                 Serial.println("  enable / disable Motor driver on/off");
+                Serial.flush();
                 Serial.println("=== Dance ===");
                 Serial.println("  dance <type>     Start dance (see 'dance list')");
                 Serial.println("  dance stop       Stop dance");
@@ -836,6 +848,7 @@ void serialCommandTask(void *parameter)
                 Serial.println("  behavior <type>  Start behavior (see 'behavior list')");
                 Serial.println("  behavior stop    Stop behavior");
                 Serial.println("  behavior list    List behavior types");
+                Serial.flush();
                 Serial.println("=== Network ===");
                 Serial.println("  wifi             Show WiFi status");
                 Serial.println("  wifi <s> <p>     Set WiFi SSID + password");
@@ -844,6 +857,7 @@ void serialCommandTask(void *parameter)
                 Serial.println("  mqtt broker <host>");
                 Serial.println("  mqtt port <n>");
                 Serial.println("  mqtt id <id>     Set device ID");
+                Serial.flush();
                 Serial.println("=== System ===");
                 Serial.println("  status           Quick status");
                 Serial.println("  statusfull       Full status with TMC2209");
