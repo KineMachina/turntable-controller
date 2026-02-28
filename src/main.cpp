@@ -239,15 +239,7 @@ void setup()
     ESP_LOGI(TAG, "OLED display task created on Core 0");
     ESP_LOGI(TAG, "All tasks created successfully");
 
-    Serial.println("\nSerial Commands:");
-    Serial.println("  status           - Show current status (basic, no TMC)");
-    Serial.println("  statusfull       - Show full status including TMC2209");
-    Serial.println("  zero             - Zero stepper position");
-    Serial.println("  log [off|error|warn|info|debug] - Set log level");
-    if (httpServer != nullptr && httpServer->isConnected())
-    {
-        httpServer->printEndpoints();
-    }
+    Serial.println("\nType 'help' for serial commands.");
     Serial.println();
 }
 
@@ -379,158 +371,404 @@ void serialCommandTask(void *parameter)
         // Wait for command from queue (blocking, efficient)
         if (serialCommandQueue.receiveCommand(cmdBuffer, sizeof(cmdBuffer), heartbeatInterval))
         {
+            // Helper lambda for queuing motor commands
+            auto queueMotorCmd = [](MotorCommand& cmd) -> bool {
+                cmd.statusCallback = nullptr;
+                cmd.statusContext = nullptr;
+                return motorCommandQueue.sendCommand(cmd, pdMS_TO_TICKS(100));
+            };
+
             // Process command
+            // --- Status commands ---
             if (strcmp(cmdBuffer, "status") == 0)
             {
                 Serial.println("========================================");
-                Serial.println("System Status (Basic)");
-                Serial.println("========================================");
-                
-                // System Information
-                Serial.printf("Free Heap: %u bytes\n", ESP.getFreeHeap());
-                Serial.printf("Uptime: %lu ms\n", millis());
-                
-                // WiFi Information
+                Serial.printf("Free Heap: %u bytes | Uptime: %lu ms\n", ESP.getFreeHeap(), millis());
                 if (httpServer != nullptr && httpServer->isConnected())
                 {
-                    Serial.println("WiFi: Connected");
-                    Serial.printf("  SSID: %s\n", WiFi.SSID().c_str());
-                    vTaskDelay(pdMS_TO_TICKS(5)); // Yield to other tasks
-                    Serial.printf("  IP Address: %s\n", httpServer->getIPAddress().c_str());
-                    vTaskDelay(pdMS_TO_TICKS(5));
-                    Serial.printf("  Gateway: %s\n", WiFi.gatewayIP().toString().c_str());
-                    vTaskDelay(pdMS_TO_TICKS(5));
-                    Serial.printf("  Subnet: %s\n", WiFi.subnetMask().toString().c_str());
-                    vTaskDelay(pdMS_TO_TICKS(5));
-                    Serial.printf("  DNS: %s\n", WiFi.dnsIP().toString().c_str());
-                    vTaskDelay(pdMS_TO_TICKS(5));
-                    Serial.printf("  RSSI: %d dBm\n", WiFi.RSSI());
-                    vTaskDelay(pdMS_TO_TICKS(5));
-                    Serial.printf("  MAC: %s\n", WiFi.macAddress().c_str());
-                    vTaskDelay(pdMS_TO_TICKS(5));
+                    Serial.printf("WiFi: %s  IP: %s  RSSI: %d dBm\n",
+                        WiFi.SSID().c_str(), httpServer->getIPAddress().c_str(), WiFi.RSSI());
                 }
                 else
                 {
                     Serial.println("WiFi: Disconnected");
                 }
-                
-                // Stepper Motor Status
-                Serial.printf("Stepper Position: %ld steps\n", stepperController.getStepperPosition());
-                Serial.printf("Enabled: %s\n", stepperController.isEnabled() ? "Yes" : "No");
-                Serial.printf("Running: %s\n", stepperController.isRunning() ? "Yes" : "No");
-                Serial.printf("Microsteps: %u\n", stepperController.getMicrosteps());
-                Serial.printf("Gear Ratio: %.2f:1 (stepper:turntable)\n", stepperController.getGearRatio());
-
-                // Dance Status
-                Serial.printf("Dance In Progress: %s\n", stepperController.isDanceInProgress() ? "Yes" : "No");
-                
-                // Queue Status
-                Serial.printf("Motor Queue: %u pending\n", motorCommandQueue.getCount());
-                Serial.printf("Serial Queue: %u pending\n", serialCommandQueue.getCount());
-                
+                Serial.printf("Position: %.2f deg (%ld steps)  Heading: %.2f deg\n",
+                    stepperController.getStepperPositionDegrees(),
+                    stepperController.getStepperPosition(),
+                    stepperController.getStepperPositionDegrees());
+                Serial.printf("Enabled: %s  Running: %s  Microsteps: %u  Gear: %.2f:1\n",
+                    stepperController.isEnabled() ? "Yes" : "No",
+                    stepperController.isRunning() ? "Yes" : "No",
+                    stepperController.getMicrosteps(),
+                    stepperController.getGearRatio());
+                Serial.printf("Dance: %s  Behavior: %s\n",
+                    stepperController.isDanceInProgress() ? "Yes" : "No",
+                    stepperController.isBehaviorInProgress() ? "Yes" : "No");
+                {
+                    const SystemConfig& cfg = configManager.getConfig();
+                    Serial.printf("MQTT: %s (%s)  Device: %s\n",
+                        cfg.mqttEnabled ? "Enabled" : "Disabled",
+                        mqttController.isConnected() ? "Connected" : "Disconnected",
+                        cfg.mqttDeviceId);
+                }
                 Serial.println("========================================");
-            }
-            else if (strcmp(cmdBuffer, "zero") == 0)
-            {
-                // Send zero command via queue
-                MotorCommand cmd;
-                cmd.type = MotorCommandType::ZERO_POSITION;
-                cmd.statusCallback = nullptr;
-                cmd.statusContext = nullptr;
-
-                if (motorCommandQueue.sendCommand(cmd, pdMS_TO_TICKS(100)))
-                {
-                    Serial.println("Position zero command queued");
-                }
-                else
-                {
-                    Serial.println("ERROR: Failed to queue zero command");
-                }
             }
             else if (strcmp(cmdBuffer, "statusfull") == 0)
             {
                 Serial.println("========================================");
-                Serial.println("Full System Status (with TMC2209)");
+                Serial.println("Full System Status");
                 Serial.println("========================================");
-                
-                // System Information
-                Serial.printf("Free Heap: %u bytes\n", ESP.getFreeHeap());
-                Serial.printf("Uptime: %lu ms\n", millis());
-                
-                // WiFi Information
+                Serial.printf("Free Heap: %u bytes | Uptime: %lu ms\n", ESP.getFreeHeap(), millis());
+
+                // WiFi
                 if (httpServer != nullptr && httpServer->isConnected())
                 {
-                    Serial.println("WiFi: Connected");
-                    Serial.printf("  SSID: %s\n", WiFi.SSID().c_str());
-                    vTaskDelay(pdMS_TO_TICKS(5)); // Yield to other tasks
-                    Serial.printf("  IP Address: %s\n", httpServer->getIPAddress().c_str());
-                    vTaskDelay(pdMS_TO_TICKS(5));
-                    Serial.printf("  Gateway: %s\n", WiFi.gatewayIP().toString().c_str());
-                    vTaskDelay(pdMS_TO_TICKS(5));
-                    Serial.printf("  Subnet: %s\n", WiFi.subnetMask().toString().c_str());
-                    vTaskDelay(pdMS_TO_TICKS(5));
-                    Serial.printf("  DNS: %s\n", WiFi.dnsIP().toString().c_str());
-                    vTaskDelay(pdMS_TO_TICKS(5));
-                    Serial.printf("  RSSI: %d dBm\n", WiFi.RSSI());
-                    vTaskDelay(pdMS_TO_TICKS(5));
-                    Serial.printf("  MAC: %s\n", WiFi.macAddress().c_str());
-                    vTaskDelay(pdMS_TO_TICKS(5));
+                    Serial.printf("WiFi: %s  IP: %s\n", WiFi.SSID().c_str(), httpServer->getIPAddress().c_str());
+                    Serial.printf("  Gateway: %s  Subnet: %s\n",
+                        WiFi.gatewayIP().toString().c_str(), WiFi.subnetMask().toString().c_str());
+                    Serial.printf("  DNS: %s  RSSI: %d dBm  MAC: %s\n",
+                        WiFi.dnsIP().toString().c_str(), WiFi.RSSI(), WiFi.macAddress().c_str());
                 }
                 else
                 {
                     Serial.println("WiFi: Disconnected");
                 }
-                
-                // Stepper Motor Status
-                Serial.printf("Stepper Position: %ld steps\n", stepperController.getStepperPosition());
-                Serial.printf("Enabled: %s\n", stepperController.isEnabled() ? "Yes" : "No");
-                Serial.printf("Running: %s\n", stepperController.isRunning() ? "Yes" : "No");
-                Serial.printf("Microsteps: %u\n", stepperController.getMicrosteps());
-                Serial.printf("Gear Ratio: %.2f:1 (stepper:turntable)\n", stepperController.getGearRatio());
-                
-                // TMC2209 Driver Status (with delays between UART reads to prevent watchdog timeout)
-                Serial.printf("TMC RMS Current: %u mA\n", stepperController.getTmcRmsCurrent());
-                vTaskDelay(pdMS_TO_TICKS(10)); // Yield to other tasks
-                Serial.printf("TMC CS Actual: %u\n", stepperController.getTmcCsActual());
+
+                // Motor
+                Serial.printf("Position: %.2f deg (%ld steps)\n",
+                    stepperController.getStepperPositionDegrees(),
+                    stepperController.getStepperPosition());
+                Serial.printf("Enabled: %s  Running: %s  Microsteps: %u  Gear: %.2f:1\n",
+                    stepperController.isEnabled() ? "Yes" : "No",
+                    stepperController.isRunning() ? "Yes" : "No",
+                    stepperController.getMicrosteps(),
+                    stepperController.getGearRatio());
+
+                // TMC2209
+                Serial.printf("TMC RMS Current: %u mA  Actual: %.2f mA\n",
+                    stepperController.getTmcRmsCurrent(), stepperController.getTmcActualCurrent());
                 vTaskDelay(pdMS_TO_TICKS(10));
-                Serial.printf("TMC Actual Current: %.2f mA\n", stepperController.getTmcActualCurrent());
+                Serial.printf("TMC IRUN: %u  IHOLD: %u  CS Actual: %u\n",
+                    stepperController.getTmcIrun(), stepperController.getTmcIhold(),
+                    stepperController.getTmcCsActual());
                 vTaskDelay(pdMS_TO_TICKS(10));
-                Serial.printf("TMC IRUN: %u%%\n", stepperController.getTmcIrun());
-                vTaskDelay(pdMS_TO_TICKS(10));
-                Serial.printf("TMC IHOLD: %u%%\n", stepperController.getTmcIhold());
-                vTaskDelay(pdMS_TO_TICKS(10));
-                Serial.printf("TMC Enabled: %s\n", stepperController.getTmcEnabled() ? "Yes" : "No");
-                vTaskDelay(pdMS_TO_TICKS(10));
-                Serial.printf("TMC Mode: %s\n", stepperController.getTmcSpreadCycle() ? "SpreadCycle" : "StealthChop");
-                vTaskDelay(pdMS_TO_TICKS(10));
-                Serial.printf("TMC PWM Autoscale: %s\n", stepperController.getTmcPwmAutoscale() ? "Enabled" : "Disabled");
-                vTaskDelay(pdMS_TO_TICKS(10));
-                Serial.printf("TMC Blank Time: %u\n", stepperController.getTmcBlankTime());
+                Serial.printf("TMC Mode: %s  PWM Autoscale: %s  Blank Time: %u\n",
+                    stepperController.getTmcSpreadCycle() ? "SpreadCycle" : "StealthChop",
+                    stepperController.getTmcPwmAutoscale() ? "On" : "Off",
+                    stepperController.getTmcBlankTime());
                 vTaskDelay(pdMS_TO_TICKS(10));
 
-                // Dance Status
-                Serial.printf("Dance In Progress: %s\n", stepperController.isDanceInProgress() ? "Yes" : "No");
-                
-                // MQTT configuration and connection status
+                // Dance/Behavior
+                Serial.printf("Dance: %s  Behavior: %s\n",
+                    stepperController.isDanceInProgress() ? "Yes" : "No",
+                    stepperController.isBehaviorInProgress() ? "Yes" : "No");
+
+                // MQTT
                 {
                     const SystemConfig& cfg = configManager.getConfig();
-                    Serial.println("MQTT:");
-                    Serial.printf("  Enabled: %s\n", cfg.mqttEnabled ? "Yes" : "No");
-                    Serial.printf("  Connected: %s\n", mqttController.isConnected() ? "Yes" : "No");
-                    if (cfg.mqttEnabled)
-                    {
-                        Serial.printf("  Broker: %s\n", cfg.mqttBroker);
-                        Serial.printf("  Port: %u\n", cfg.mqttPort);
-                        Serial.printf("  Device ID: %s\n", cfg.mqttDeviceId);
-                        Serial.printf("  Base Topic: %s\n", cfg.mqttBaseTopic);
-                    }
+                    Serial.printf("MQTT: %s (%s)\n",
+                        cfg.mqttEnabled ? "Enabled" : "Disabled",
+                        mqttController.isConnected() ? "Connected" : "Disconnected");
+                    Serial.printf("  Broker: %s:%u  Device: %s\n",
+                        cfg.mqttBroker, cfg.mqttPort, cfg.mqttDeviceId);
                 }
-                
-                // Queue Status
-                Serial.printf("Motor Queue: %u pending\n", motorCommandQueue.getCount());
-                Serial.printf("Serial Queue: %u pending\n", serialCommandQueue.getCount());
-                
+
+                Serial.printf("Motor Queue: %u  Serial Queue: %u\n",
+                    motorCommandQueue.getCount(), serialCommandQueue.getCount());
                 Serial.println("========================================");
+            }
+            // --- Motion commands ---
+            else if (strncmp(cmdBuffer, "position ", 9) == 0)
+            {
+                float deg = atof(cmdBuffer + 9);
+                MotorCommand cmd;
+                cmd.type = MotorCommandType::MOVE_TO;
+                cmd.data.position.value = deg;
+                if (queueMotorCmd(cmd))
+                    Serial.printf("Moving to %.2f deg\n", deg);
+                else
+                    Serial.println("ERROR: Queue full");
+            }
+            else if (strncmp(cmdBuffer, "heading ", 8) == 0)
+            {
+                float deg = atof(cmdBuffer + 8);
+                stepperController.moveToHeadingDegrees(deg);
+                Serial.printf("Heading to %.2f deg (shortest path)\n", deg);
+            }
+            else if (strcmp(cmdBuffer, "home") == 0)
+            {
+                MotorCommand cmd;
+                cmd.type = MotorCommandType::HOME;
+                if (queueMotorCmd(cmd))
+                    Serial.println("Homing to 0 deg");
+                else
+                    Serial.println("ERROR: Queue full");
+            }
+            else if (strcmp(cmdBuffer, "zero") == 0)
+            {
+                MotorCommand cmd;
+                cmd.type = MotorCommandType::ZERO_POSITION;
+                if (queueMotorCmd(cmd))
+                    Serial.println("Position zeroed");
+                else
+                    Serial.println("ERROR: Queue full");
+            }
+            else if (strcmp(cmdBuffer, "forward") == 0)
+            {
+                stepperController.runForward();
+                Serial.println("Running forward");
+            }
+            else if (strcmp(cmdBuffer, "backward") == 0)
+            {
+                stepperController.runBackward();
+                Serial.println("Running backward");
+            }
+            else if (strcmp(cmdBuffer, "stop") == 0)
+            {
+                stepperController.stopMove();
+                Serial.println("Stopping (decelerate)");
+            }
+            else if (strcmp(cmdBuffer, "forcestop") == 0)
+            {
+                stepperController.stopMove();
+                stepperController.enable(false);
+                Serial.println("Emergency stop — motor disabled");
+            }
+            // --- Motor config commands ---
+            else if (strncmp(cmdBuffer, "speed ", 6) == 0)
+            {
+                float val = atof(cmdBuffer + 6);
+                if (val > 0) {
+                    MotorCommand cmd;
+                    cmd.type = MotorCommandType::SET_SPEED;
+                    cmd.data.speed.speed = val;
+                    if (queueMotorCmd(cmd))
+                        Serial.printf("Speed set to %.0f steps/sec\n", val);
+                    else
+                        Serial.println("ERROR: Queue full");
+                } else {
+                    Serial.println("ERROR: Speed must be > 0");
+                }
+            }
+            else if (strncmp(cmdBuffer, "accel ", 6) == 0)
+            {
+                float val = atof(cmdBuffer + 6);
+                if (val > 0) {
+                    MotorCommand cmd;
+                    cmd.type = MotorCommandType::SET_ACCELERATION;
+                    cmd.data.acceleration.accel = val;
+                    if (queueMotorCmd(cmd))
+                        Serial.printf("Acceleration set to %.0f steps/sec^2\n", val);
+                    else
+                        Serial.println("ERROR: Queue full");
+                } else {
+                    Serial.println("ERROR: Acceleration must be > 0");
+                }
+            }
+            else if (strncmp(cmdBuffer, "microsteps ", 11) == 0)
+            {
+                int val = atoi(cmdBuffer + 11);
+                if (val >= 1 && val <= 256 && (val & (val - 1)) == 0) {
+                    MotorCommand cmd;
+                    cmd.type = MotorCommandType::SET_MICROSTEPS;
+                    cmd.data.microsteps.microsteps = (uint8_t)val;
+                    if (queueMotorCmd(cmd))
+                        Serial.printf("Microsteps set to %d\n", val);
+                    else
+                        Serial.println("ERROR: Queue full");
+                } else {
+                    Serial.println("ERROR: Microsteps must be power of 2 (1-256)");
+                }
+            }
+            else if (strncmp(cmdBuffer, "gearratio ", 10) == 0)
+            {
+                float val = atof(cmdBuffer + 10);
+                if (val >= 0.1f && val <= 100.0f) {
+                    stepperController.setGearRatio(val);
+                    Serial.printf("Gear ratio set to %.2f:1\n", val);
+                } else {
+                    Serial.println("ERROR: Gear ratio must be 0.1-100.0");
+                }
+            }
+            else if (strncmp(cmdBuffer, "speedhz ", 8) == 0)
+            {
+                float val = atof(cmdBuffer + 8);
+                stepperController.setSpeedInHz(val);
+                Serial.printf("Speed set to %.0f Hz\n", val);
+            }
+            else if (strcmp(cmdBuffer, "enable") == 0)
+            {
+                MotorCommand cmd;
+                cmd.type = MotorCommandType::ENABLE;
+                cmd.data.enable.enable = true;
+                if (queueMotorCmd(cmd))
+                    Serial.println("Motor enabled");
+                else
+                    Serial.println("ERROR: Queue full");
+            }
+            else if (strcmp(cmdBuffer, "disable") == 0)
+            {
+                MotorCommand cmd;
+                cmd.type = MotorCommandType::ENABLE;
+                cmd.data.enable.enable = false;
+                if (queueMotorCmd(cmd))
+                    Serial.println("Motor disabled");
+                else
+                    Serial.println("ERROR: Queue full");
+            }
+            // --- Dance commands ---
+            else if (strcmp(cmdBuffer, "dance list") == 0)
+            {
+                Serial.println("Dances: twist, shake, spin, wiggle, watusi, peppermint_twist");
+            }
+            else if (strcmp(cmdBuffer, "dance stop") == 0)
+            {
+                if (stepperController.stopDance())
+                    Serial.println("Dance stopped");
+                else
+                    Serial.println("No dance in progress");
+            }
+            else if (strncmp(cmdBuffer, "dance ", 6) == 0)
+            {
+                const char* name = cmdBuffer + 6;
+                StepperMotorController::DanceType type;
+                bool valid = true;
+                if (strcmp(name, "twist") == 0) type = StepperMotorController::DanceType::TWIST;
+                else if (strcmp(name, "shake") == 0) type = StepperMotorController::DanceType::SHAKE;
+                else if (strcmp(name, "spin") == 0) type = StepperMotorController::DanceType::SPIN;
+                else if (strcmp(name, "wiggle") == 0) type = StepperMotorController::DanceType::WIGGLE;
+                else if (strcmp(name, "watusi") == 0) type = StepperMotorController::DanceType::WATUSI;
+                else if (strcmp(name, "peppermint_twist") == 0) type = StepperMotorController::DanceType::PEPPERMINT_TWIST;
+                else { valid = false; Serial.println("Unknown dance. Use 'dance list' to see options."); }
+                if (valid) {
+                    if (stepperController.startDance(type))
+                        Serial.printf("Dance '%s' started\n", name);
+                    else
+                        Serial.println("ERROR: Could not start dance (already dancing?)");
+                }
+            }
+            // --- Behavior commands ---
+            else if (strcmp(cmdBuffer, "behavior list") == 0)
+            {
+                Serial.println("Behaviors: scanning, sleeping, eating, alert, roaring, stalking, playing, resting, hunting, victory");
+            }
+            else if (strcmp(cmdBuffer, "behavior stop") == 0)
+            {
+                if (stepperController.stopBehavior())
+                    Serial.println("Behavior stopped");
+                else
+                    Serial.println("No behavior in progress");
+            }
+            else if (strncmp(cmdBuffer, "behavior ", 9) == 0)
+            {
+                const char* name = cmdBuffer + 9;
+                StepperMotorController::BehaviorType type;
+                bool valid = true;
+                if (strcmp(name, "scanning") == 0) type = StepperMotorController::BehaviorType::SCANNING;
+                else if (strcmp(name, "sleeping") == 0) type = StepperMotorController::BehaviorType::SLEEPING;
+                else if (strcmp(name, "eating") == 0) type = StepperMotorController::BehaviorType::EATING;
+                else if (strcmp(name, "alert") == 0) type = StepperMotorController::BehaviorType::ALERT;
+                else if (strcmp(name, "roaring") == 0) type = StepperMotorController::BehaviorType::ROARING;
+                else if (strcmp(name, "stalking") == 0) type = StepperMotorController::BehaviorType::STALKING;
+                else if (strcmp(name, "playing") == 0) type = StepperMotorController::BehaviorType::PLAYING;
+                else if (strcmp(name, "resting") == 0) type = StepperMotorController::BehaviorType::RESTING;
+                else if (strcmp(name, "hunting") == 0) type = StepperMotorController::BehaviorType::HUNTING;
+                else if (strcmp(name, "victory") == 0) type = StepperMotorController::BehaviorType::VICTORY;
+                else { valid = false; Serial.println("Unknown behavior. Use 'behavior list' to see options."); }
+                if (valid) {
+                    if (stepperController.startBehavior(type))
+                        Serial.printf("Behavior '%s' started\n", name);
+                    else
+                        Serial.println("ERROR: Could not start behavior (already running?)");
+                }
+            }
+            // --- Network config ---
+            else if (strcmp(cmdBuffer, "wifi") == 0)
+            {
+                const SystemConfig& cfg = configManager.getConfig();
+                Serial.printf("WiFi SSID: %s\n", cfg.wifiSSID);
+                if (httpServer != nullptr && httpServer->isConnected())
+                    Serial.printf("Status: Connected  IP: %s  RSSI: %d dBm\n",
+                        httpServer->getIPAddress().c_str(), WiFi.RSSI());
+                else
+                    Serial.println("Status: Disconnected");
+            }
+            else if (strncmp(cmdBuffer, "wifi ", 5) == 0)
+            {
+                // Parse: wifi <ssid> <password>
+                char ssid[33] = {0};
+                char pass[65] = {0};
+                const char* args = cmdBuffer + 5;
+                const char* space = strchr(args, ' ');
+                if (space) {
+                    size_t ssidLen = space - args;
+                    if (ssidLen < sizeof(ssid)) {
+                        strncpy(ssid, args, ssidLen);
+                        strncpy(pass, space + 1, sizeof(pass) - 1);
+                        configManager.setWifiSSID(ssid);
+                        configManager.setWifiPassword(pass);
+                        configManager.save();
+                        Serial.printf("WiFi set to '%s'. Reboot to apply.\n", ssid);
+                    }
+                } else {
+                    Serial.println("Usage: wifi <ssid> <password>");
+                }
+            }
+            else if (strcmp(cmdBuffer, "mqtt") == 0)
+            {
+                const SystemConfig& cfg = configManager.getConfig();
+                Serial.printf("MQTT: %s (%s)\n",
+                    cfg.mqttEnabled ? "Enabled" : "Disabled",
+                    mqttController.isConnected() ? "Connected" : "Disconnected");
+                Serial.printf("  Broker: %s:%u\n", cfg.mqttBroker, cfg.mqttPort);
+                Serial.printf("  Device ID: %s\n", cfg.mqttDeviceId);
+                Serial.printf("  Base Topic: %s\n", cfg.mqttBaseTopic);
+            }
+            else if (strcmp(cmdBuffer, "mqtt enable") == 0)
+            {
+                configManager.setMqttEnabled(true);
+                configManager.save();
+                Serial.println("MQTT enabled. Reboot to apply.");
+            }
+            else if (strcmp(cmdBuffer, "mqtt disable") == 0)
+            {
+                configManager.setMqttEnabled(false);
+                configManager.save();
+                Serial.println("MQTT disabled. Reboot to apply.");
+            }
+            else if (strncmp(cmdBuffer, "mqtt broker ", 12) == 0)
+            {
+                configManager.setMqttBroker(cmdBuffer + 12);
+                configManager.save();
+                Serial.printf("MQTT broker set to '%s'. Reboot to apply.\n", cmdBuffer + 12);
+            }
+            else if (strncmp(cmdBuffer, "mqtt port ", 10) == 0)
+            {
+                uint16_t port = (uint16_t)atoi(cmdBuffer + 10);
+                configManager.setMqttPort(port);
+                configManager.save();
+                Serial.printf("MQTT port set to %u. Reboot to apply.\n", port);
+            }
+            else if (strncmp(cmdBuffer, "mqtt id ", 8) == 0)
+            {
+                configManager.setMqttDeviceId(cmdBuffer + 8);
+                configManager.save();
+                Serial.printf("MQTT device ID set to '%s'. Reboot to apply.\n", cmdBuffer + 8);
+            }
+            // --- System commands ---
+            else if (strcmp(cmdBuffer, "save") == 0)
+            {
+                if (configManager.save())
+                    Serial.println("Configuration saved to NVS");
+                else
+                    Serial.println("ERROR: Failed to save configuration");
+            }
+            else if (strcmp(cmdBuffer, "reboot") == 0)
+            {
+                Serial.println("Rebooting...");
+                delay(100);
+                ESP.restart();
             }
             // --- Logging level control ---
             else if (strcmp(cmdBuffer, "log off") == 0 || strcmp(cmdBuffer, "log none") == 0)
@@ -571,13 +809,51 @@ void serialCommandTask(void *parameter)
                 }
                 Serial.printf("Log level: %s\n", levelStr);
             }
+            // --- Help ---
+            else if (strcmp(cmdBuffer, "help") == 0)
+            {
+                Serial.println("=== Motion ===");
+                Serial.println("  position <deg>   Move to absolute position");
+                Serial.println("  heading <deg>    Move to heading (shortest path)");
+                Serial.println("  home             Return to 0 deg");
+                Serial.println("  zero             Set current position as 0");
+                Serial.println("  forward          Continuous forward rotation");
+                Serial.println("  backward         Continuous backward rotation");
+                Serial.println("  stop             Stop (decelerate)");
+                Serial.println("  forcestop        Emergency stop + disable");
+                Serial.println("=== Config ===");
+                Serial.println("  speed <sps>      Max speed (steps/sec)");
+                Serial.println("  accel <sps2>     Acceleration (steps/sec^2)");
+                Serial.println("  microsteps <n>   Microstepping (1-256, power of 2)");
+                Serial.println("  gearratio <r>    Gear ratio (0.1-100.0)");
+                Serial.println("  speedhz <hz>     Velocity mode speed (Hz)");
+                Serial.println("  enable / disable Motor driver on/off");
+                Serial.println("=== Dance ===");
+                Serial.println("  dance <type>     Start dance (see 'dance list')");
+                Serial.println("  dance stop       Stop dance");
+                Serial.println("  dance list       List dance types");
+                Serial.println("=== Behavior ===");
+                Serial.println("  behavior <type>  Start behavior (see 'behavior list')");
+                Serial.println("  behavior stop    Stop behavior");
+                Serial.println("  behavior list    List behavior types");
+                Serial.println("=== Network ===");
+                Serial.println("  wifi             Show WiFi status");
+                Serial.println("  wifi <s> <p>     Set WiFi SSID + password");
+                Serial.println("  mqtt             Show MQTT config");
+                Serial.println("  mqtt enable/disable");
+                Serial.println("  mqtt broker <host>");
+                Serial.println("  mqtt port <n>");
+                Serial.println("  mqtt id <id>     Set device ID");
+                Serial.println("=== System ===");
+                Serial.println("  status           Quick status");
+                Serial.println("  statusfull       Full status with TMC2209");
+                Serial.println("  save             Save config to NVS");
+                Serial.println("  reboot           Restart device");
+                Serial.println("  log [off|error|warn|info|debug]");
+            }
             else
             {
-                Serial.println("Unknown command. Available commands:");
-                Serial.println("  status           - Show status (basic, no TMC)");
-                Serial.println("  statusfull       - Show full status including TMC2209");
-                Serial.println("  zero             - Zero stepper position");
-                Serial.println("  log [off|error|warn|info|debug] - Set log level");
+                Serial.printf("Unknown command: '%s'. Type 'help' for commands.\n", cmdBuffer);
             }
         }
 
