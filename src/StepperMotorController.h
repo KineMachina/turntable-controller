@@ -42,6 +42,14 @@ private:
 
     float gearRatio = 1.0f;
      
+    // Auto-enable/disable
+    unsigned long lastMotorActiveTime;  // millis() when motor last had work
+    static const unsigned long IDLE_DISABLE_MS = 5000;  // Disable after 5s idle
+    bool autoEnabled;  // Track if we auto-enabled (vs explicit user enable)
+
+    void autoEnableIfNeeded();
+    void checkIdleDisable();
+
     // Debug logging
     bool debugLogging;
     unsigned long lastDebugLogTime;

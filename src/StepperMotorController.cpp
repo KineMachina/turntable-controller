@@ -26,6 +26,7 @@ StepperMotorController::StepperMotorController(int step, int dir, int enable,
       tmcUartRx(tmcUartRx), tmcUartTx(tmcUartTx), tmcRsense(tmcRsense), tmcAddress(tmcAddress),
       maxSpeed(maxSpeed), acceleration(acceleration),
       microsteps(8),
+      lastMotorActiveTime(0), autoEnabled(false),
       debugLogging(false), lastDebugLogTime(0),
       stepperEngine(nullptr), stepper(nullptr),
       danceTaskHandle(nullptr), danceInProgress(false),
@@ -59,7 +60,7 @@ bool StepperMotorController::begin(const SystemConfig* config) {
     pinMode(dirPin, OUTPUT);
     if (enablePin >= 0) {
         pinMode(enablePin, OUTPUT);
-        digitalWrite(enablePin, LOW);  // Enable motor (LOW = enabled)
+        digitalWrite(enablePin, HIGH);  // Start disabled (HIGH = disabled)
     }
 
     // Initialize TMC2209 if present (UART, driver, defaults/config)
@@ -69,7 +70,7 @@ bool StepperMotorController::begin(const SystemConfig* config) {
         delay(100);
 
         tmcDriver->begin();
-        tmcDriver->toff(TMC_DEFAULT_TOFF);
+        tmcDriver->toff(0);  // Start disabled; auto-enabled on first move
         tmcDriver->I_scale_analog(false);
         if (config != nullptr) {
             tmcDriver->blank_time(config->tmcBlankTime);
@@ -124,11 +125,40 @@ bool StepperMotorController::begin(const SystemConfig* config) {
 
     ESP_LOGI(TAG, "Stepper motor initialized. Max Speed: %.0f steps/sec, Acceleration: %.0f steps/sec^2",
              maxSpeed, acceleration);
+    ESP_LOGI(TAG, "Motor starts disabled — will auto-enable on first move, auto-disable after %lus idle",
+             IDLE_DISABLE_MS / 1000);
 
     return true;
 }
 
+void StepperMotorController::autoEnableIfNeeded() {
+    if (!isEnabled()) {
+        enable(true);
+        autoEnabled = true;
+        ESP_LOGI(TAG, "Auto-enabled motor for move");
+    }
+    lastMotorActiveTime = millis();
+}
+
+void StepperMotorController::checkIdleDisable() {
+    if (!autoEnabled || !isEnabled()) return;
+    if (danceInProgress || behaviorInProgress) {
+        lastMotorActiveTime = millis();
+        return;
+    }
+    if (stepper != nullptr && stepper->isRunning()) {
+        lastMotorActiveTime = millis();
+        return;
+    }
+    if (millis() - lastMotorActiveTime >= IDLE_DISABLE_MS) {
+        enable(false);
+        autoEnabled = false;
+        ESP_LOGI(TAG, "Auto-disabled motor after %lus idle", IDLE_DISABLE_MS / 1000);
+    }
+}
+
 void StepperMotorController::update() {
+    checkIdleDisable();
 }
 
 long StepperMotorController::getStepperPosition() const {
@@ -254,6 +284,7 @@ float StepperMotorController::stepsToDegrees(long steps) const {
 }
 
 void StepperMotorController::moveToDegrees(float degrees) {
+    autoEnableIfNeeded();
     // Input degrees are in turntable degrees
     // Convert turntable degrees to stepper degrees (multiply by gear ratio)
     float stepperDegrees = degrees * gearRatio;
@@ -271,6 +302,8 @@ bool StepperMotorController::moveToHeadingDegrees(float targetHeading) {
     if (stepper == nullptr) {
         return false;
     }
+
+    autoEnableIfNeeded();
 
     // Normalize target heading to 0-360 range
     while (targetHeading < 0.0f) {
@@ -354,7 +387,7 @@ void StepperMotorController::processCommandQueue(MotorCommandQueue* cmdQueue) {
         switch (cmd.type) {
             case MotorCommandType::MOVE_TO: {
                 cmdName = "MOVE_TO";
-                // Move to target position in degrees (converts to steps internally)
+                // autoEnableIfNeeded() called inside moveToDegrees()
                 moveToDegrees(cmd.data.position.value);
                 ESP_LOGI(TAG, "Command: MOVE_TO -> %.2f deg", cmd.data.position.value);
                 break;
@@ -363,6 +396,7 @@ void StepperMotorController::processCommandQueue(MotorCommandQueue* cmdQueue) {
             case MotorCommandType::ENABLE:
                 cmdName = "ENABLE";
                 enable(cmd.data.enable.enable);
+                autoEnabled = false;  // Explicit enable/disable overrides auto behavior
                 ESP_LOGI(TAG, "Command: ENABLE -> %s", cmd.data.enable.enable ? "ON" : "OFF");
                 break;
                 
@@ -386,7 +420,8 @@ void StepperMotorController::processCommandQueue(MotorCommandQueue* cmdQueue) {
         
             case MotorCommandType::HOME:
                 cmdName = "HOME";
-                home(0);  // Call home with no timeout (uses default timeout)
+                autoEnableIfNeeded();
+                home(0);
                 ESP_LOGI(TAG, "Command: HOME");
                 break;
                 
@@ -415,12 +450,14 @@ void StepperMotorController::setSpeedInHz(float speedHz) {
 
 void StepperMotorController::runForward() {
     if (stepper != nullptr) {
+        autoEnableIfNeeded();
         stepper->runForward();
     }
 }
 
 void StepperMotorController::runBackward() {
     if (stepper != nullptr) {
+        autoEnableIfNeeded();
         stepper->runBackward();
     }
 }
@@ -501,6 +538,8 @@ bool StepperMotorController::startDance(DanceType danceType) {
         return false;
     }
     
+    autoEnableIfNeeded();
+
     // Store dance type and mark as in progress
     currentDanceType = danceType;
     danceInProgress = true;
@@ -578,9 +617,11 @@ bool StepperMotorController::startBehavior(BehaviorType behaviorType) {
         return false;
     }
     
+    autoEnableIfNeeded();
+
     currentBehaviorType = behaviorType;
     behaviorInProgress = true;
-    
+
     xTaskCreatePinnedToCore(
         behaviorTaskWrapper,
         "BehaviorTask",
