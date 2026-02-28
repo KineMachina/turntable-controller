@@ -26,7 +26,7 @@ StepperMotorController::StepperMotorController(int step, int dir, int enable,
       tmcUartRx(tmcUartRx), tmcUartTx(tmcUartTx), tmcRsense(tmcRsense), tmcAddress(tmcAddress),
       maxSpeed(maxSpeed), acceleration(acceleration),
       microsteps(8),
-      lastMotorActiveTime(0), autoEnabled(false),
+      motorEnabled(false), lastMotorActiveTime(0), autoEnabled(false),
       debugLogging(false), lastDebugLogTime(0),
       stepperEngine(nullptr), stepper(nullptr),
       danceTaskHandle(nullptr), danceInProgress(false),
@@ -70,6 +70,8 @@ bool StepperMotorController::begin(const SystemConfig* config) {
         delay(100);
 
         tmcDriver->begin();
+        tmcDriver->pdn_disable(true);   // Enable UART control (disable PDN_UART analog function)
+        tmcDriver->mstep_reg_select(true); // Use UART for microstep setting (not MS1/MS2 pins)
         tmcDriver->toff(0);  // Start disabled; auto-enabled on first move
         tmcDriver->I_scale_analog(false);
         if (config != nullptr) {
@@ -91,9 +93,18 @@ bool StepperMotorController::begin(const SystemConfig* config) {
         }
         tmcDriver->push();
 
+        // Flush echo bytes then verify UART readback
+        while (tmcSerial->available()) tmcSerial->read();
+
+        // IOIN register (0x06) is the most reliable for testing UART readback
+        uint32_t ioin = tmcDriver->IOIN();
+        uint8_t version = (ioin >> 24) & 0xFF;
+        ESP_LOGI(TAG, "TMC2209 IOIN: 0x%08X (version: 0x%02X, %s)",
+                 ioin, version, version == 0x21 ? "OK" : "READBACK FAILED");
+
         float actualCurrent = (tmcDriver->cs_actual() / 32.0f) * tmcDriver->rms_current();
-        ESP_LOGI(TAG, "TMC2209 initialized. Current set to: %u mA | CS_ACTUAL: %u (%.0f mA)",
-                 tmcDriver->rms_current(), tmcDriver->cs_actual(), actualCurrent);
+        ESP_LOGI(TAG, "TMC2209 initialized. Current set to: %u mA | CS_ACTUAL: %u (%.0f mA) | toff: %u",
+                 tmcDriver->rms_current(), tmcDriver->cs_actual(), actualCurrent, tmcDriver->toff());
     }
 
     // Initialize FastAccelStepperEngine (static instance)
@@ -183,33 +194,21 @@ void StepperMotorController::moveTo(long position) {
     }
 }
 
-void StepperMotorController::enable(bool enable) {
+void StepperMotorController::enable(bool en) {
     if (tmcDriver != nullptr) {
-        // Use TMC2209 UART control for enable/disable
-        if (enable) {
-            tmcDriver->toff(5);  // Enable driver (toff > 0 enables)
-        } else {
-            tmcDriver->toff(0);  // Disable driver (toff = 0 disables)
-        }
+        tmcDriver->toff(en ? 5 : 0);
     }
-    
-    // Also control enable pin if available (for compatibility)
+
     if (enablePin >= 0) {
-        digitalWrite(enablePin, enable ? LOW : HIGH);
+        digitalWrite(enablePin, en ? LOW : HIGH);
     }
+
+    motorEnabled = en;
+    ESP_LOGI(TAG, "Motor %s", en ? "enabled" : "disabled");
 }
 
 bool StepperMotorController::isEnabled() const {
-    if (tmcDriver != nullptr) {
-        // Check TMC2209 enable status via UART
-        return tmcDriver->toff() > 0;
-    }
-    
-    // Fallback to enable pin check
-    if (enablePin >= 0) {
-        return digitalRead(enablePin) == LOW;
-    }
-    return true;  // Always enabled if no enable pin or driver
+    return motorEnabled;
 }
 
 void StepperMotorController::setMaxSpeed(float speed) {
