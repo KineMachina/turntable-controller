@@ -42,8 +42,8 @@ private:
 
     float gearRatio = 1.0f;
      
-    // Motor enable state
-    bool motorEnabled;  // Tracks actual enable state (don't trust TMC UART read-back)
+    // Motor enable state (TMCStepper shadow register for toff is unreliable)
+    bool motorEnabled;
 
     // Auto-enable/disable
     unsigned long lastMotorActiveTime;  // millis() when motor last had work

@@ -72,7 +72,6 @@ bool StepperMotorController::begin(const SystemConfig* config) {
         tmcDriver->begin();
         tmcDriver->pdn_disable(true);   // Enable UART control (disable PDN_UART analog function)
         tmcDriver->mstep_reg_select(true); // Use UART for microstep setting (not MS1/MS2 pins)
-        tmcDriver->toff(0);  // Start disabled; auto-enabled on first move
         tmcDriver->I_scale_analog(false);
         if (config != nullptr) {
             tmcDriver->blank_time(config->tmcBlankTime);
@@ -91,6 +90,8 @@ bool StepperMotorController::begin(const SystemConfig* config) {
             tmcDriver->irun(TMC_DEFAULT_IRUN);
             tmcDriver->ihold(TMC_DEFAULT_IHOLD);
         }
+        // toff MUST be set last — rms_current() forces toff=5 if it's 0
+        tmcDriver->toff(0);  // Start disabled; auto-enabled on first move
         tmcDriver->push();
 
         // Flush echo bytes then verify UART readback
