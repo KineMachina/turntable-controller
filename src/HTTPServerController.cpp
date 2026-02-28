@@ -1,5 +1,6 @@
 #include "HTTPServerController.h"
 #include <ArduinoJson.h>
+#include <ESPmDNS.h>
 #include <FreeRTOS.h>
 #include <task.h>
 #include "RuntimeLog.h"
@@ -619,6 +620,15 @@ HTTPServerController::HTTPServerController(const char *ssid, const char *passwor
     : wifiSSID(ssid), wifiPassword(password), httpPort(port),
       server(nullptr), stepperController(nullptr), commandQueue(nullptr), configManager(nullptr), mqttController(nullptr)
 {
+    strncpy(deviceId, "turntable-001", sizeof(deviceId) - 1);
+    deviceId[sizeof(deviceId) - 1] = '\0';
+}
+
+void HTTPServerController::setDeviceId(const char* id) {
+    if (id && strlen(id) > 0) {
+        strncpy(deviceId, id, sizeof(deviceId) - 1);
+        deviceId[sizeof(deviceId) - 1] = '\0';
+    }
 }
 
 HTTPServerController::~HTTPServerController()
@@ -635,6 +645,7 @@ bool HTTPServerController::initWiFi()
     ESP_LOGI(TAG, "Connecting to: %s", wifiSSID);
 
     WiFi.mode(WIFI_STA);
+    WiFi.setHostname(deviceId);
     WiFi.begin(wifiSSID, wifiPassword);
 
     // Wait for connection with timeout
@@ -650,6 +661,15 @@ bool HTTPServerController::initWiFi()
     {
         ESP_LOGI(TAG, "WiFi connected!");
         ESP_LOGI(TAG, "IP address: %s", WiFi.localIP().toString().c_str());
+
+        // Initialize mDNS for .local hostname resolution
+        if (!MDNS.begin(deviceId)) {
+            ESP_LOGE(TAG, "Error setting up mDNS responder!");
+        } else {
+            ESP_LOGI(TAG, "mDNS responder started");
+            ESP_LOGI(TAG, "Hostname: %s.local", deviceId);
+        }
+
         return true;
     }
     else

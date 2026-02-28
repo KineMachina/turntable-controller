@@ -113,6 +113,7 @@ void setup()
 
     // Initialize HTTP Server (includes WiFi) - use config values
     httpServer = new HTTPServerController(config.wifiSSID, config.wifiPassword, HTTP_PORT);
+    httpServer->setDeviceId(config.mqttDeviceId);
     if (httpServer->begin(&stepperController, &motorCommandQueue, &configManager, &mqttController))
     {
         ESP_LOGI(TAG, "Web interface available at: http://%s", httpServer->getIPAddress().c_str());
