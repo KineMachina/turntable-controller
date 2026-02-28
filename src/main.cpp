@@ -421,17 +421,17 @@ void serialCommandTask(void *parameter)
             }
             else if (strcmp(cmdBuffer, "statusfull") == 0)
             {
-                Serial.println("========================================");
-                Serial.println("Full System Status");
-                Serial.println("========================================");
+                Serial.print("========================================\n"
+                             "Full System Status\n"
+                             "========================================\n");
                 Serial.printf("Free Heap: %u bytes | Uptime: %lu ms\n", ESP.getFreeHeap(), millis());
-                Serial.flush();
-                vTaskDelay(pdMS_TO_TICKS(20));
+                Serial.flush(); vTaskDelay(pdMS_TO_TICKS(20));
 
                 // WiFi
                 if (httpServer != nullptr && httpServer->isConnected())
                 {
                     Serial.printf("WiFi: %s  IP: %s\n", WiFi.SSID().c_str(), httpServer->getIPAddress().c_str());
+                    Serial.flush(); vTaskDelay(pdMS_TO_TICKS(20));
                     Serial.printf("  Gateway: %s  Subnet: %s\n",
                         WiFi.gatewayIP().toString().c_str(), WiFi.subnetMask().toString().c_str());
                     Serial.printf("  DNS: %s  RSSI: %d dBm  MAC: %s\n",
@@ -441,8 +441,7 @@ void serialCommandTask(void *parameter)
                 {
                     Serial.println("WiFi: Disconnected");
                 }
-                Serial.flush();
-                vTaskDelay(pdMS_TO_TICKS(20));
+                Serial.flush(); vTaskDelay(pdMS_TO_TICKS(20));
 
                 // Motor
                 Serial.printf("Position: %.2f deg (%ld steps)\n",
@@ -453,32 +452,27 @@ void serialCommandTask(void *parameter)
                     stepperController.isRunning() ? "Yes" : "No",
                     stepperController.getMicrosteps(),
                     stepperController.getGearRatio());
-                Serial.flush();
-                vTaskDelay(pdMS_TO_TICKS(20));
+                Serial.flush(); vTaskDelay(pdMS_TO_TICKS(20));
 
                 // TMC2209
                 Serial.printf("TMC RMS Current: %u mA  Actual: %.2f mA\n",
                     stepperController.getTmcRmsCurrent(), stepperController.getTmcActualCurrent());
-                Serial.flush();
-                vTaskDelay(pdMS_TO_TICKS(20));
+                Serial.flush(); vTaskDelay(pdMS_TO_TICKS(20));
                 Serial.printf("TMC IRUN: %u  IHOLD: %u  CS Actual: %u\n",
                     stepperController.getTmcIrun(), stepperController.getTmcIhold(),
                     stepperController.getTmcCsActual());
-                Serial.flush();
-                vTaskDelay(pdMS_TO_TICKS(20));
+                Serial.flush(); vTaskDelay(pdMS_TO_TICKS(20));
                 Serial.printf("TMC Mode: %s  PWM Autoscale: %s  Blank Time: %u\n",
                     stepperController.getTmcSpreadCycle() ? "SpreadCycle" : "StealthChop",
                     stepperController.getTmcPwmAutoscale() ? "On" : "Off",
                     stepperController.getTmcBlankTime());
-                Serial.flush();
-                vTaskDelay(pdMS_TO_TICKS(20));
+                Serial.flush(); vTaskDelay(pdMS_TO_TICKS(20));
 
-                // Dance/Behavior
+                // Dance/Behavior + MQTT
                 Serial.printf("Dance: %s  Behavior: %s\n",
                     stepperController.isDanceInProgress() ? "Yes" : "No",
                     stepperController.isBehaviorInProgress() ? "Yes" : "No");
-
-                // MQTT
+                Serial.flush(); vTaskDelay(pdMS_TO_TICKS(20));
                 {
                     const SystemConfig& cfg = configManager.getConfig();
                     Serial.printf("MQTT: %s (%s)\n",
@@ -487,12 +481,11 @@ void serialCommandTask(void *parameter)
                     Serial.printf("  Broker: %s:%u  Device: %s\n",
                         cfg.mqttBroker, cfg.mqttPort, cfg.mqttDeviceId);
                 }
-
+                Serial.flush(); vTaskDelay(pdMS_TO_TICKS(20));
                 Serial.printf("Motor Queue: %u  Serial Queue: %u\n",
                     motorCommandQueue.getCount(), serialCommandQueue.getCount());
                 Serial.println("========================================");
-                Serial.flush();
-                vTaskDelay(pdMS_TO_TICKS(20));
+                Serial.flush(); vTaskDelay(pdMS_TO_TICKS(20));
             }
             // --- Motion commands ---
             else if (strncmp(cmdBuffer, "position ", 9) == 0)
