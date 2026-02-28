@@ -395,6 +395,7 @@ void serialCommandTask(void *parameter)
                     Serial.println("WiFi: Disconnected");
                 }
                 Serial.flush();
+                vTaskDelay(pdMS_TO_TICKS(20));
                 Serial.printf("Position: %.2f deg (%ld steps)  Heading: %.2f deg\n",
                     stepperController.getStepperPositionDegrees(),
                     stepperController.getStepperPosition(),
@@ -416,6 +417,7 @@ void serialCommandTask(void *parameter)
                 }
                 Serial.println("========================================");
                 Serial.flush();
+                vTaskDelay(pdMS_TO_TICKS(20));
             }
             else if (strcmp(cmdBuffer, "statusfull") == 0)
             {
@@ -424,6 +426,7 @@ void serialCommandTask(void *parameter)
                 Serial.println("========================================");
                 Serial.printf("Free Heap: %u bytes | Uptime: %lu ms\n", ESP.getFreeHeap(), millis());
                 Serial.flush();
+                vTaskDelay(pdMS_TO_TICKS(20));
 
                 // WiFi
                 if (httpServer != nullptr && httpServer->isConnected())
@@ -439,6 +442,7 @@ void serialCommandTask(void *parameter)
                     Serial.println("WiFi: Disconnected");
                 }
                 Serial.flush();
+                vTaskDelay(pdMS_TO_TICKS(20));
 
                 // Motor
                 Serial.printf("Position: %.2f deg (%ld steps)\n",
@@ -450,23 +454,24 @@ void serialCommandTask(void *parameter)
                     stepperController.getMicrosteps(),
                     stepperController.getGearRatio());
                 Serial.flush();
+                vTaskDelay(pdMS_TO_TICKS(20));
 
                 // TMC2209
                 Serial.printf("TMC RMS Current: %u mA  Actual: %.2f mA\n",
                     stepperController.getTmcRmsCurrent(), stepperController.getTmcActualCurrent());
                 Serial.flush();
-                vTaskDelay(pdMS_TO_TICKS(10));
+                vTaskDelay(pdMS_TO_TICKS(20));
                 Serial.printf("TMC IRUN: %u  IHOLD: %u  CS Actual: %u\n",
                     stepperController.getTmcIrun(), stepperController.getTmcIhold(),
                     stepperController.getTmcCsActual());
                 Serial.flush();
-                vTaskDelay(pdMS_TO_TICKS(10));
+                vTaskDelay(pdMS_TO_TICKS(20));
                 Serial.printf("TMC Mode: %s  PWM Autoscale: %s  Blank Time: %u\n",
                     stepperController.getTmcSpreadCycle() ? "SpreadCycle" : "StealthChop",
                     stepperController.getTmcPwmAutoscale() ? "On" : "Off",
                     stepperController.getTmcBlankTime());
                 Serial.flush();
-                vTaskDelay(pdMS_TO_TICKS(10));
+                vTaskDelay(pdMS_TO_TICKS(20));
 
                 // Dance/Behavior
                 Serial.printf("Dance: %s  Behavior: %s\n",
@@ -487,6 +492,7 @@ void serialCommandTask(void *parameter)
                     motorCommandQueue.getCount(), serialCommandQueue.getCount());
                 Serial.println("========================================");
                 Serial.flush();
+                vTaskDelay(pdMS_TO_TICKS(20));
             }
             // --- Motion commands ---
             else if (strncmp(cmdBuffer, "position ", 9) == 0)
@@ -822,48 +828,49 @@ void serialCommandTask(void *parameter)
             // --- Help ---
             else if (strcmp(cmdBuffer, "help") == 0)
             {
-                Serial.println("=== Motion ===");
-                Serial.println("  position <deg>   Move to absolute position");
-                Serial.println("  heading <deg>    Move to heading (shortest path)");
-                Serial.println("  home             Return to 0 deg");
-                Serial.println("  zero             Set current position as 0");
-                Serial.println("  forward          Continuous forward rotation");
-                Serial.println("  backward         Continuous backward rotation");
-                Serial.println("  stop             Stop (decelerate)");
-                Serial.println("  forcestop        Emergency stop + disable");
-                Serial.flush();
-                Serial.println("=== Config ===");
-                Serial.println("  speed <sps>      Max speed (steps/sec)");
-                Serial.println("  accel <sps2>     Acceleration (steps/sec^2)");
-                Serial.println("  microsteps <n>   Microstepping (1-256, power of 2)");
-                Serial.println("  gearratio <r>    Gear ratio (0.1-100.0)");
-                Serial.println("  speedhz <hz>     Velocity mode speed (Hz)");
-                Serial.println("  enable / disable Motor driver on/off");
-                Serial.flush();
-                Serial.println("=== Dance ===");
-                Serial.println("  dance <type>     Start dance (see 'dance list')");
-                Serial.println("  dance stop       Stop dance");
-                Serial.println("  dance list       List dance types");
-                Serial.println("=== Behavior ===");
-                Serial.println("  behavior <type>  Start behavior (see 'behavior list')");
-                Serial.println("  behavior stop    Stop behavior");
-                Serial.println("  behavior list    List behavior types");
-                Serial.flush();
-                Serial.println("=== Network ===");
-                Serial.println("  wifi             Show WiFi status");
-                Serial.println("  wifi <s> <p>     Set WiFi SSID + password");
-                Serial.println("  mqtt             Show MQTT config");
-                Serial.println("  mqtt enable/disable");
-                Serial.println("  mqtt broker <host>");
-                Serial.println("  mqtt port <n>");
-                Serial.println("  mqtt id <id>     Set device ID");
-                Serial.flush();
-                Serial.println("=== System ===");
-                Serial.println("  status           Quick status");
-                Serial.println("  statusfull       Full status with TMC2209");
-                Serial.println("  save             Save config to NVS");
-                Serial.println("  reboot           Restart device");
-                Serial.println("  log [off|error|warn|info|debug]");
+                static const char* const helpSections[] = {
+                    "=== Motion ===\n"
+                    "  position <deg>   Move to absolute position\n"
+                    "  heading <deg>    Move to heading (shortest path)\n"
+                    "  home             Return to 0 deg\n"
+                    "  zero             Set current position as 0\n"
+                    "  forward          Continuous forward rotation\n"
+                    "  backward         Continuous backward rotation\n"
+                    "  stop             Stop (decelerate)\n"
+                    "  forcestop        Emergency stop + disable\n",
+
+                    "=== Config ===\n"
+                    "  speed <sps>      Max speed (steps/sec)\n"
+                    "  accel <sps2>     Acceleration (steps/sec^2)\n"
+                    "  microsteps <n>   Microstepping (1-256, power of 2)\n"
+                    "  gearratio <r>    Gear ratio (0.1-100.0)\n"
+                    "  speedhz <hz>     Velocity mode speed (Hz)\n"
+                    "  enable / disable Motor driver on/off\n",
+
+                    "=== Dance / Behavior ===\n"
+                    "  dance <type>     Start dance (see 'dance list')\n"
+                    "  dance stop/list  Stop or list dances\n"
+                    "  behavior <type>  Start behavior (see 'behavior list')\n"
+                    "  behavior stop/list\n",
+
+                    "=== Network ===\n"
+                    "  wifi             Show WiFi status\n"
+                    "  wifi <s> <p>     Set WiFi SSID + password\n"
+                    "  mqtt             Show MQTT config\n"
+                    "  mqtt enable/disable/broker/port/id\n",
+
+                    "=== System ===\n"
+                    "  status           Quick status\n"
+                    "  statusfull       Full status with TMC2209\n"
+                    "  save             Save config to NVS\n"
+                    "  reboot           Restart device\n"
+                    "  log [off|error|warn|info|debug]\n",
+                };
+                for (int i = 0; i < 5; i++) {
+                    Serial.print(helpSections[i]);
+                    Serial.flush();
+                    vTaskDelay(pdMS_TO_TICKS(20));
+                }
             }
             else
             {
