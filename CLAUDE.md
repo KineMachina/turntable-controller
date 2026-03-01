@@ -79,8 +79,25 @@ static const char* TAG = "MyTag";
 ### Key Hardware Details
 
 - **TMC2209**: UART single-wire bidirectional on PDN_UART (GPIO 17 TX, GPIO 18 RX). Supports StealthChop/SpreadCycle modes, microstepping 1-256
-- **Stepper**: Step on GPIO 5, Dir on GPIO 6, Enable on GPIO 4
+- **Stepper**: Step on GPIO 5, Dir on GPIO 6, Enable on GPIO 4 (active LOW)
+- **Motor auto-enable/disable**: Motor starts disabled on boot. Auto-enables on any move command, auto-disables after 5s idle. Explicit `enable`/`disable` overrides auto behavior. State tracked via `motorEnabled` boolean (not TMC register read-back).
 - **Watchdog**: 120s timeout in platformio.ini to accommodate long dance/behavior sequences
+
+### TMC2209 UART
+
+Single-wire half-duplex UART (TX and RX both connected to PDN_UART via resistor bridge). The TMCStepper library handles echo byte suppression.
+
+**Required init sequence** (order matters):
+1. `pdn_disable(true)` — switches PDN_UART from analog power-down to UART mode. Without this, register writes are ignored.
+2. `mstep_reg_select(true)` — use UART for microstep setting instead of MS1/MS2 pins.
+3. Configure all TMC parameters (`rms_current`, `irun`, `ihold`, etc.)
+4. `toff(0)` **must be set last** — `rms_current()` internally forces `toff=5` if it sees `toff=0`.
+5. `push()` — flush all shadow registers to hardware.
+
+**Read-back caveats:**
+- `toff()` getter reads from TMCStepper's shadow register, which gets clobbered by `rms_current()` and other CHOPCONF methods. Do not use it to check enable state — use the `motorEnabled` boolean instead.
+- `IOIN()` register (version byte `0x21`) is the most reliable for verifying UART communication works.
+- Flush echo bytes before first read: `while (tmcSerial->available()) tmcSerial->read();`
 
 ### API Documentation
 
