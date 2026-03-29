@@ -68,4 +68,4 @@ Follow the conventions already used in the codebase:
 
 ## License
 
-This project is licensed under the [GNU General Public License v3.0](LICENSE). By submitting a pull request, you agree that your contributions will be licensed under the same terms.
+This project is licensed under the [MIT License](LICENSE). By submitting a pull request, you agree that your contributions will be licensed under the same terms.
