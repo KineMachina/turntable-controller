@@ -41,3 +41,9 @@ jobs:
 
       - name: Build ESP32-S3 target
         run: pio run
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: .pio/build/esp32-s3-devkitc-1/firmware.bin
